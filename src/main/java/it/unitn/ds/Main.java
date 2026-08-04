@@ -1,21 +1,26 @@
 package it.unitn.ds;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import it.unitn.ds.AbstractReplica.InitSystem;
 
+
 public class Main {
+    final static int N_REPLICAS = 4;
+    final static int N_CLIENTS = 4;
+    final static int COORDINATOR_ID = 0;
+    final static long clientReadTimeoutDelay = 2000;
+    final static long clientWriteTimeoutDelay = 2000;
+
 
     public static void main(String[] args) {
         System.out.println("========================================");
         System.out.println("START");
         System.out.println("========================================\n");
 
-        final int N_REPLICAS = 4;
-        final int COORDINATOR_ID = 0;
+
         final ActorSystem system = ActorSystem.create("TestMain");
 
         Logger.setDestinationStdout();
@@ -36,8 +41,18 @@ public class Main {
             entry.getValue().tell(initMsg, ActorRef.noSender());
         }
 
-        // TODO: Create your clients
-        
+        // Create clients
+        Map<Integer, ActorRef> clients = new HashMap<>(N_CLIENTS);
+        for (int i=0; i<N_CLIENTS; i++) {
+            clients.put(i,
+                system.actorOf(
+                    Client.props(clientReadTimeoutDelay, clientWriteTimeoutDelay, Optional.empty()),
+                    "Client_" + i
+                )
+            );
+            Logger.log("Client " + i + " was added!");
+        }
+
         // TODO: Implement your main logic
 
         system.terminate();

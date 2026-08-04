@@ -3,7 +3,7 @@ package it.unitn.ds;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 
-import java.util.Optional;
+import java.util.*;
 
 public class Client extends AbstractClient {
 
@@ -22,19 +22,29 @@ public class Client extends AbstractClient {
 
     @Override
     public void sendRead(ActorRef replica, int index) {
-        // TODO: implement        
+        // TODO: implement
+        replica.tell(new Replica.ReadReqMsg(index), getSelf());
     }
 
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
         // TODO: implement
+        replica.tell(new WriteRequest(index, value), getSelf());
+
+    }
+
+    /* Getting Results back from the Replica */
+    private void onReadResult(ReadResult msg) {
+        Logger.log(getSelf().path().name() + " received the location " + msg.value + " of index " + msg.index + " from Replica " + msg.fromReplica);
     }
 
     @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
                 // TODO add your message handlers here .match(, )
+                .match(ReadResult.class, this::onReadResult)
                 .build();
     }
+
 
 }
