@@ -8,9 +8,15 @@ import java.util.*;
 
 public class Replica extends AbstractReplica {
 
-    private final int[] locations = new int[AbstractReplica.POSITIONS_LIST_LENGTH];
-    private final Map<Integer, ActorRef> ReplicasGroup;
+    private final int[] locations = new int[AbstractReplica.POSITIONS_LIST_LENGTH]; // the stable values
+    private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
+
+    private  EpochSeqNum lastStable; // the epoch and seqNum (index) of the last stable value
+    private final EpochSeqNum unstableLocation;
+    private int quorum;
+    private boolean stable;
+
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
@@ -19,9 +25,12 @@ public class Replica extends AbstractReplica {
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
         // TODO: implement
-        this.ReplicasGroup = new HashMap<>();
+        this.replicasGroup = new HashMap<>();
         this.coordinator_id = this.id;
-
+        this.lastStable = new EpochSeqNum(0, 0);
+        this.unstableLocation = new EpochSeqNum(0, 0);
+        this.quorum = 0;
+        this.stable = true;
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -47,9 +56,9 @@ public class Replica extends AbstractReplica {
     @Override
     public void initSystem(InitSystem sysInit) {
         // TODO: implement
-        Logger.log("Replica " + this.id + "is starting.");
+        Logger.debug("Replica " + this.id + "is starting.");
         this.coordinator_id = sysInit.coordinator_id;
-        this.ReplicasGroup.putAll(sysInit.group);
+        this.replicasGroup.putAll(sysInit.group);
     }
 
     @Override
@@ -59,6 +68,7 @@ public class Replica extends AbstractReplica {
                 .match(ReadReqMsg.class, this::onReadReqMsg)
                 .match(WriteReqMsg.class, this::onWriteReqMsg)
                 .match(UpdateRequestMsg.class, this::onUpdateRequestMsg)
+                .match(AckMsg.class, this::onAckMsg)
                 .build();
     }
 
@@ -74,6 +84,7 @@ public class Replica extends AbstractReplica {
     }
     private void onReadReqMsg(ReadReqMsg msg) {
         /* Send the Value back to the Client */
+        Logger.debug(getSelf().path().name() + " Received a Read Request from " + getSender().path().name());
         this.getSender().tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSelf());
     }
 
@@ -89,7 +100,8 @@ public class Replica extends AbstractReplica {
     }
     private void onWriteReqMsg(WriteReqMsg msg) {
         /* Send an Update Request to the coordinator */
-        this.ReplicasGroup.get(coordinator_id).tell(new UpdateRequestMsg(msg.index, msg.value), getSelf());
+        Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
+        this.replicasGroup.get(coordinator_id).tell(new UpdateRequestMsg(msg.index, msg.value), getSelf());
     }
 
     /* Update Request From Replica */
@@ -100,9 +112,44 @@ public class Replica extends AbstractReplica {
             this.index = index;
             this.value = value;
         }
+
+        public UpdateRequestMsg(UpdateRequestMsg other) {
+            this.index = other.index;
+            this.value = other.value;
+        }
     }
 
     private void onUpdateRequestMsg(UpdateRequestMsg msg) {
-
+        Logger.debug(getSelf().path().name() + " Received an Update Request from " + getSender().path().name());
+        if(this.id == this.coordinator_id) {
+            // Coordinator Receives the Update Msg from a Replica
+            this.stable = false;
+            this.locations[msg.index] = msg.value; // Writing the received value to the locations
+            this.unstableLocation.setSeqNum(this.unstableLocation.seqNum++);
+            this.quorum++; // increasing the quorum
+            Utils.broadcastUpdate(getSelf(), this.replicasGroup, msg); // Broadcast the Update to other Replicas
+        }
+        else {
+            // Replica Receives the Update Msg from the Coordinator
+            this.locations[msg.index] = msg.value; // Writing the received value to the locations
+            this.unstableLocation.setSeqNum(this.unstableLocation.seqNum++);
+            getSender().tell(new AckMsg(), getSelf());
+        }
     }
+
+    public static class AckMsg {
+        public AckMsg() {
+        }
+    }
+
+    private void onAckMsg(AckMsg msg) {
+        Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name());
+//        if(!stable) {
+//            this.quorum++;
+//            if (quorum > this.replicasGroup.size() / 2) {
+//                this.lastStable = this.unstableLocation;
+//            }
+//        }
+    }
+
 }
