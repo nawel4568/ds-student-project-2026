@@ -1,0 +1,1 @@
+Implemented the Update Msg (Forwarding msg: Replica -> Coordinator | Broadcasting Msg: Coordinator -> Replicas), added Utils class to manage the broadcast, added EpochSeqNum class to manage the pair <e, i>
