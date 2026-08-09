@@ -1,0 +1,1 @@
+Added the LocationUpdate class to manage the status of each update data, with managing the quorum as well. Refactor Replica.java variables to use the LocationUpdate and use it onUpdateRequestMsg/onUpdateMsg. separate the Update msg that the coordinator get from the one that the replica get (UpdateRequestMsg, UpdateMsg respectively)
