@@ -29,7 +29,7 @@ public class Client extends AbstractClient {
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
         // TODO: implement
-        replica.tell(new WriteRequest(index, value), getSelf());
+        replica.tell(new Replica.WriteReqMsg(index, value), getSelf());
 
     }
 

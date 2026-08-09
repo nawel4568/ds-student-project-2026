@@ -55,7 +55,7 @@ public class Replica extends AbstractReplica {
     @Override
     public void initSystem(InitSystem sysInit) {
         // TODO: implement
-        Logger.debug("Replica " + this.id + "is starting.");
+        Logger.debug("Replica " + this.id + " is starting.");
         this.coordinator_id = sysInit.coordinator_id;
         this.replicasGroup.putAll(sysInit.group);
     }
@@ -148,6 +148,7 @@ public class Replica extends AbstractReplica {
 
     private void onUpdateMsg(UpdateMsg msg) {
         // Message received by Replica from Coordinator
+        Logger.debug(getSelf().path().name() + " Received an Update Msg from " + getSender().path().name());
         this.lastUpdate = new EpochSeqNum(msg.epochSeqNum);
         updatesHistory.put(this.lastUpdate, new LocationUpdate(msg.currentUpdate));
         getSender().tell(new AckMsg(this.lastUpdate), getSelf());
@@ -175,6 +176,7 @@ public class Replica extends AbstractReplica {
         else if(!localUpdate.isStable()) { // the if is to skip the ACK msg after th update is set to stable already
             // 1. Set the update in history to Stable
             // 2. Write the update to the locations array
+            Logger.debug(getSelf().path().name() + " set " + msg.epochSeqNum + " to stable.");
             currentUpdate.setStable();
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
             locations[currentUpdate.index] = currentUpdate.value;
@@ -192,9 +194,12 @@ public class Replica extends AbstractReplica {
 
     private void onWriteOKMsg(WriteOKMsg msg) {
         // Received by the Replicas
+        Logger.debug(getSelf().path().name() + " Received a WriteOK from " + getSender().path().name());
+
         LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
         currentUpdate.setStable();
         updatesHistory.put(msg.epochSeqNum, currentUpdate);
+        Logger.debug(getSelf().path().name() + " Write " + currentUpdate.value + " to locations with index " + currentUpdate.index);
         locations[currentUpdate.index] = currentUpdate.value;
     }
 
