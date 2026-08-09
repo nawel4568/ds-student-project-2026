@@ -34,6 +34,10 @@ public class LocationUpdate {
         this.quorum = this.quorum + 1;
     }
 
+    public boolean isStable() {
+        return this.status == UpdateStatus.STABLE;
+    }
+
     public enum UpdateStatus {
         UNSTABLE,
         STABLE

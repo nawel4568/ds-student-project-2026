@@ -69,6 +69,7 @@ public class Replica extends AbstractReplica {
                 .match(UpdateRequestMsg.class, this::onUpdateRequestMsg)
                 .match(UpdateMsg.class, this::onUpdateMsg)
                 .match(AckMsg.class, this::onAckMsg)
+                .match(WriteOKMsg.class, this::onWriteOKMsg)
                 .build();
     }
 
@@ -165,15 +166,15 @@ public class Replica extends AbstractReplica {
         Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name());
         LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
         currentUpdate.quorum ++;
+        LocationUpdate localUpdate = updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
 
         if(currentUpdate.quorum < (replicasGroup.size()/2)) {
             // add the updated quorum and do nothing
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
         }
-        else {
+        else if(!localUpdate.isStable()) { // the if is to skip the ACK msg after th update is set to stable already
             // 1. Set the update in history to Stable
             // 2. Write the update to the locations array
-            // TODO: Manages the AckMsg's after the Quorum is reached
             currentUpdate.setStable();
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
             locations[currentUpdate.index] = currentUpdate.value;
@@ -185,9 +186,17 @@ public class Replica extends AbstractReplica {
         EpochSeqNum epochSeqNum;
         public WriteOKMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
+
         }
     }
 
+    private void onWriteOKMsg(WriteOKMsg msg) {
+        // Received by the Replicas
+        LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
+        currentUpdate.setStable();
+        updatesHistory.put(msg.epochSeqNum, currentUpdate);
+        locations[currentUpdate.index] = currentUpdate.value;
+    }
 
 
 }
