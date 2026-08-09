@@ -17,19 +17,13 @@ public class EpochSeqNum implements Serializable, Comparable<EpochSeqNum>{
         this.seqNum = other.seqNum;
     }
 
-    public int getEpoch() {
-        return this.epoch;
-    }
-    public int getSeqNum() {
-        return seqNum;
+    public void incrementEpoch(){
+        this.epoch = this.epoch + 1;
+        this.seqNum = 0;
     }
 
-    public void setEpoch(int epoch){
-        this.epoch = epoch;
-    }
-
-    public void setSeqNum(int seqNum) {
-        this.seqNum = seqNum;
+    public void incrementSeqNum(){
+        this.seqNum = this.seqNum + 1;
     }
 
     @Override

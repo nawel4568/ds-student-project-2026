@@ -3,6 +3,7 @@ package it.unitn.ds;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 
+import javax.xml.stream.Location;
 import java.io.Serializable;
 import java.util.*;
 
@@ -12,10 +13,8 @@ public class Replica extends AbstractReplica {
     private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
 
-    private  EpochSeqNum lastStable; // the epoch and seqNum (index) of the last stable value
-    private final EpochSeqNum unstableLocation;
-    private int quorum;
-    private boolean stable;
+    private  EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
+    private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
 
 
     public Replica(int id) {
@@ -27,10 +26,10 @@ public class Replica extends AbstractReplica {
         // TODO: implement
         this.replicasGroup = new HashMap<>();
         this.coordinator_id = this.id;
-        this.lastStable = new EpochSeqNum(0, 0);
-        this.unstableLocation = new EpochSeqNum(0, 0);
-        this.quorum = 0;
-        this.stable = true;
+        this.lastUpdate = new EpochSeqNum(0, 0);
+
+        this.updatesHistory = new LinkedHashMap<EpochSeqNum, LocationUpdate>();
+        this.updatesHistory.put(lastUpdate, new LocationUpdate(0, 0));
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -68,6 +67,7 @@ public class Replica extends AbstractReplica {
                 .match(ReadReqMsg.class, this::onReadReqMsg)
                 .match(WriteReqMsg.class, this::onWriteReqMsg)
                 .match(UpdateRequestMsg.class, this::onUpdateRequestMsg)
+                .match(UpdateMsg.class, this::onUpdateMsg)
                 .match(AckMsg.class, this::onAckMsg)
                 .build();
     }
@@ -101,6 +101,7 @@ public class Replica extends AbstractReplica {
     private void onWriteReqMsg(WriteReqMsg msg) {
         /* Send an Update Request to the coordinator */
         Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
+
         this.replicasGroup.get(coordinator_id).tell(new UpdateRequestMsg(msg.index, msg.value), getSelf());
     }
 
@@ -120,36 +121,73 @@ public class Replica extends AbstractReplica {
     }
 
     private void onUpdateRequestMsg(UpdateRequestMsg msg) {
+        // this is received only by the coordinator
         Logger.debug(getSelf().path().name() + " Received an Update Request from " + getSender().path().name());
-        if(this.id == this.coordinator_id) {
-            // Coordinator Receives the Update Msg from a Replica
-            this.stable = false;
-            this.locations[msg.index] = msg.value; // Writing the received value to the locations
-            this.unstableLocation.setSeqNum(this.unstableLocation.seqNum++);
-            this.quorum++; // increasing the quorum
-            Utils.broadcastUpdate(getSelf(), this.replicasGroup, msg); // Broadcast the Update to other Replicas
-        }
-        else {
-            // Replica Receives the Update Msg from the Coordinator
-            this.locations[msg.index] = msg.value; // Writing the received value to the locations
-            this.unstableLocation.setSeqNum(this.unstableLocation.seqNum++);
-            getSender().tell(new AckMsg(), getSelf());
+
+        // Coordinator Receives the Update Msg from a Replica
+        this.lastUpdate.incrementSeqNum();
+        LocationUpdate currentUpdate = new LocationUpdate(msg.index, msg.value);
+        currentUpdate.setUnstable();
+        currentUpdate.increaseQuorum();
+        updatesHistory.put(this.lastUpdate, currentUpdate);
+
+        Utils.broadcastUpdate(getSelf(), this.replicasGroup, new Replica.UpdateMsg(new EpochSeqNum(this.lastUpdate), currentUpdate)); // Broadcast the Update to other Replicas
+
+    }
+
+    public static class UpdateMsg {
+        EpochSeqNum epochSeqNum;
+        LocationUpdate currentUpdate;
+
+        public UpdateMsg(EpochSeqNum epochSeqNum, LocationUpdate currentUpdate) {
+            this.epochSeqNum = epochSeqNum;
+            this.currentUpdate = currentUpdate;
         }
     }
 
+    private void onUpdateMsg(UpdateMsg msg) {
+        // Message received by Replica from Coordinator
+        this.lastUpdate = new EpochSeqNum(msg.epochSeqNum);
+        updatesHistory.put(this.lastUpdate, new LocationUpdate(msg.currentUpdate));
+        getSender().tell(new AckMsg(this.lastUpdate), getSelf());
+
+    }
+
     public static class AckMsg {
-        public AckMsg() {
+        EpochSeqNum epochSeqNum;
+        public AckMsg(EpochSeqNum epochSeqNum) {
+            this.epochSeqNum = epochSeqNum;
         }
     }
 
     private void onAckMsg(AckMsg msg) {
+        // Received by the Coordinator from Replicas
         Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name());
-//        if(!stable) {
-//            this.quorum++;
-//            if (quorum > this.replicasGroup.size() / 2) {
-//                this.lastStable = this.unstableLocation;
-//            }
-//        }
+        LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
+        currentUpdate.quorum ++;
+
+        if(currentUpdate.quorum < (replicasGroup.size()/2)) {
+            // add the updated quorum and do nothing
+            updatesHistory.put(msg.epochSeqNum, currentUpdate);
+        }
+        else {
+            // 1. Set the update in history to Stable
+            // 2. Write the update to the locations array
+            // TODO: Manages the AckMsg's after the Quorum is reached
+            currentUpdate.setStable();
+            updatesHistory.put(msg.epochSeqNum, currentUpdate);
+            locations[currentUpdate.index] = currentUpdate.value;
+            Utils.broadcastWriteOK(getSelf(), this.replicasGroup, new Replica.WriteOKMsg(msg.epochSeqNum));
+        }
     }
+
+    public static class WriteOKMsg {
+        EpochSeqNum epochSeqNum;
+        public WriteOKMsg(EpochSeqNum epochSeqNum) {
+            this.epochSeqNum = epochSeqNum;
+        }
+    }
+
+
 
 }
