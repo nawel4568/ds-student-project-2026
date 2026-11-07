@@ -70,7 +70,7 @@ public class Client extends AbstractClient {
         replica.tell(new Replica.WriteReqMsg(index, value), getSelf());
 
         Cancellable writeTimeout = getContext().getSystem().scheduler().scheduleOnce(
-                Duration.ofMillis(getReadTimeoutDelay()),
+                Duration.ofMillis(getWriteTimeoutDelay()),
                 getSelf(),
                 new WriteTimeout(getSelf(), replica, index, value),
                 getContext().system().dispatcher(),
@@ -82,12 +82,12 @@ public class Client extends AbstractClient {
     /* Getting Results back from the Replica */
     private void onReadResult(ReadResult msg) {
         cancelReadTimeout(msg.index);
-        callbackOnReadResult(new ReadResult(true, msg.index, msg.value, msg.fromReplica));
+        callbackOnReadResult(msg);
     }
 
     private void onWriteResult(WriteResult msg) {
         cancelWriteTimeout(msg.index);
-        callbackOnWriteResult(new WriteResult(true, msg.index, msg.value, msg.fromReplica));
+        callbackOnWriteResult(msg);
     }
 
     private void onReadTimeout(ReadTimeout msg) {

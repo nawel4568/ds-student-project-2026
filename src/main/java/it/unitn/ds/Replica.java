@@ -57,6 +57,19 @@ public class Replica extends AbstractReplica {
         Logger.debug("Replica " + this.id + " is starting.");
         this.coordinator_id = sysInit.coordinator_id;
         this.replicasGroup.putAll(sysInit.group);
+
+        /// ///////
+//        this.group = sysInit.group;
+//        this.coordinatorId = sysInit.coordinator_id;
+//        this.n = group.size();
+//        this.isCoordinator = (this.id == this.coordinatorId);
+//        this.ringIds = group.keySet().stream().sorted().toList();
+//        debug("initialised: n=" + n + " coordinator=" + coordinatorId + " isCoordinator=" + isCoordinator);
+//        if (isCoordinator) {
+//            startHeartbeatBeating();
+//        } else {
+//            startHeartbeatMonitoring();
+//        }
     }
 
     @Override
@@ -84,7 +97,7 @@ public class Replica extends AbstractReplica {
     private void onReadReqMsg(ReadReqMsg msg) {
         /* Send the Value back to the Client */
         Logger.debug(getSelf().path().name() + " Received a Read Request from " + getSender().path().name());
-        this.getSender().tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSelf());
+        getSender().tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSelf());
     }
 
     /* Write Request from Client */
@@ -181,7 +194,11 @@ public class Replica extends AbstractReplica {
             currentUpdate.setStable();
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
             locations[currentUpdate.index] = currentUpdate.value;
+            callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
             Utils.broadcastWriteOK(getSelf(), this.replicasGroup, new Replica.WriteOKMsg(msg.epochSeqNum));
+            if (getSelf() == currentUpdate.replicaRequested) {
+                currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+            }
         }
     }
 
@@ -200,9 +217,9 @@ public class Replica extends AbstractReplica {
         LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
         currentUpdate.setStable();
         updatesHistory.put(msg.epochSeqNum, currentUpdate);
-        Logger.debug(getSelf().path().name() + " Write " + currentUpdate.value + " to locations with index " + currentUpdate.index);
+        // Logger.debug(getSelf().path().name() + " Write " + currentUpdate.value + " to locations with index " + currentUpdate.index);
         locations[currentUpdate.index] = currentUpdate.value;
-
+        callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
         if (getSelf() == currentUpdate.replicaRequested) {
             currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
         }
