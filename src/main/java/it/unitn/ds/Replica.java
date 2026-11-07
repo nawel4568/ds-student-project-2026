@@ -57,19 +57,6 @@ public class Replica extends AbstractReplica {
         Logger.debug("Replica " + this.id + " is starting.");
         this.coordinator_id = sysInit.coordinator_id;
         this.replicasGroup.putAll(sysInit.group);
-
-        /// ///////
-//        this.group = sysInit.group;
-//        this.coordinatorId = sysInit.coordinator_id;
-//        this.n = group.size();
-//        this.isCoordinator = (this.id == this.coordinatorId);
-//        this.ringIds = group.keySet().stream().sorted().toList();
-//        debug("initialised: n=" + n + " coordinator=" + coordinatorId + " isCoordinator=" + isCoordinator);
-//        if (isCoordinator) {
-//            startHeartbeatBeating();
-//        } else {
-//            startHeartbeatMonitoring();
-//        }
     }
 
     @Override
