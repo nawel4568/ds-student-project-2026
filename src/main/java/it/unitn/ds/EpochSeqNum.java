@@ -22,8 +22,8 @@ public class EpochSeqNum implements Serializable, Comparable<EpochSeqNum>{
         this.seqNum = 0;
     }
 
-    public void incrementSeqNum(){
-        this.seqNum = this.seqNum + 1;
+    public EpochSeqNum incrementSeqNum(){
+        return new EpochSeqNum(this.epoch, this.seqNum+1);
     }
 
     @Override

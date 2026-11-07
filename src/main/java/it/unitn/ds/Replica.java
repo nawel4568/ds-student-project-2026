@@ -23,13 +23,12 @@ public class Replica extends AbstractReplica {
 
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
-        // TODO: implement
         this.replicasGroup = new HashMap<>();
         this.coordinator_id = this.id;
         this.lastUpdate = new EpochSeqNum(0, 0);
 
         this.updatesHistory = new LinkedHashMap<EpochSeqNum, LocationUpdate>();
-        this.updatesHistory.put(lastUpdate, new LocationUpdate(0, 0));
+        this.updatesHistory.put(lastUpdate, new LocationUpdate(0, 0, ActorRef.noSender(), ActorRef.noSender()));
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -63,7 +62,6 @@ public class Replica extends AbstractReplica {
     @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
-                // TODO add your message handlers here .match(, )
                 .match(ReadReqMsg.class, this::onReadReqMsg)
                 .match(WriteReqMsg.class, this::onWriteReqMsg)
                 .match(UpdateRequestMsg.class, this::onUpdateRequestMsg)
@@ -103,21 +101,24 @@ public class Replica extends AbstractReplica {
         /* Send an Update Request to the coordinator */
         Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
 
-        this.replicasGroup.get(coordinator_id).tell(new UpdateRequestMsg(msg.index, msg.value), getSelf());
+        this.replicasGroup.get(coordinator_id).tell(new UpdateRequestMsg(msg.index, msg.value, getSender()), getSelf());
     }
 
     /* Update Request From Replica */
     public static class UpdateRequestMsg {
         int index;
         int value;
-        public UpdateRequestMsg(int index, int value) {
+        ActorRef clientRequesting; // to know which is the client to send the msg of WriteResult to
+        public UpdateRequestMsg(int index, int value, ActorRef clientRequesting) {
             this.index = index;
             this.value = value;
+            this.clientRequesting = clientRequesting;
         }
 
         public UpdateRequestMsg(UpdateRequestMsg other) {
             this.index = other.index;
             this.value = other.value;
+            this.clientRequesting = other.clientRequesting;
         }
     }
 
@@ -126,8 +127,8 @@ public class Replica extends AbstractReplica {
         Logger.debug(getSelf().path().name() + " Received an Update Request from " + getSender().path().name());
 
         // Coordinator Receives the Update Msg from a Replica
-        this.lastUpdate.incrementSeqNum();
-        LocationUpdate currentUpdate = new LocationUpdate(msg.index, msg.value);
+        this.lastUpdate = this.lastUpdate.incrementSeqNum();
+        LocationUpdate currentUpdate = new LocationUpdate(msg.index, msg.value, msg.clientRequesting, getSender());
         currentUpdate.setUnstable();
         currentUpdate.increaseQuorum();
         updatesHistory.put(this.lastUpdate, currentUpdate);
@@ -164,7 +165,7 @@ public class Replica extends AbstractReplica {
 
     private void onAckMsg(AckMsg msg) {
         // Received by the Coordinator from Replicas
-        Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name());
+        Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name() + " for update " + msg.epochSeqNum.toString());
         LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
         currentUpdate.quorum ++;
         LocationUpdate localUpdate = updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
@@ -201,6 +202,11 @@ public class Replica extends AbstractReplica {
         updatesHistory.put(msg.epochSeqNum, currentUpdate);
         Logger.debug(getSelf().path().name() + " Write " + currentUpdate.value + " to locations with index " + currentUpdate.index);
         locations[currentUpdate.index] = currentUpdate.value;
+
+        if (getSelf() == currentUpdate.replicaRequested) {
+            currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+        }
+
     }
 
 

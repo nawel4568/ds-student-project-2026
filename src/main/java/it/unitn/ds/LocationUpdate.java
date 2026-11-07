@@ -1,5 +1,6 @@
 package it.unitn.ds;
 
+import akka.actor.ActorRef;
 import scala.collection.generic.BitOperations;
 
 public class LocationUpdate {
@@ -7,12 +8,16 @@ public class LocationUpdate {
     public final int value;
     public UpdateStatus status;
     public int quorum;
+    ActorRef replicaRequested; // The replica that got the WriteReqMsg from the client
+    ActorRef clientRequesting; // The client that sent the WriteReqMsg
 
-    public LocationUpdate(int index, int value) {
+    public LocationUpdate(int index, int value, ActorRef clientRequesting, ActorRef replicaRequested) {
         this.index = index;
         this.value = value;
         this.status = UpdateStatus.STABLE;
         this.quorum = 0; // Quorum of this Update Request with this.value and this.index
+        this.clientRequesting = clientRequesting;
+        this.replicaRequested = replicaRequested;
     }
 
     public LocationUpdate(LocationUpdate other){
@@ -20,6 +25,8 @@ public class LocationUpdate {
         this.value = other.value;
         this.status = other.status;
         this.quorum = other.quorum;
+        this.clientRequesting = other.clientRequesting;
+        this.replicaRequested = other.replicaRequested;
     }
 
     public void setStable(){

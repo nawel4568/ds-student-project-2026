@@ -66,7 +66,7 @@ public class Client extends AbstractClient {
         /* To be checked since the Write does not need to wait for a reply and
         should the Write to the same index trigger the cancellation of the old timeout */
         cancelWriteTimeout(index);
-        Logger.debug(getSelf().path().name() + " sends a write Req of value " + value + " at index " + value + "to Replica " + replica.path().name());
+        Logger.debug(getSelf().path().name() + " sends a write Req of value " + value + " at index " + index + " to Replica " + replica.path().name());
         replica.tell(new Replica.WriteReqMsg(index, value), getSelf());
 
         Cancellable writeTimeout = getContext().getSystem().scheduler().scheduleOnce(
