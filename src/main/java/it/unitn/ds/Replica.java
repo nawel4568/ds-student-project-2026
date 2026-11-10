@@ -171,11 +171,10 @@ public class Replica extends AbstractReplica {
         currentUpdate.quorum ++;
         LocationUpdate localUpdate = updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
 
-        if(currentUpdate.quorum < (replicasGroup.size()/2)) {
+        if (currentUpdate.quorum < replicasGroup.size() / 2 + 1) {
             // add the updated quorum and do nothing
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
-        }
-        else if(!localUpdate.isStable()) { // the if is to skip the ACK msg after th update is set to stable already
+        } else if (!localUpdate.isStable()) { // the if is to skip the ACK msg after the update is set to stable already
             // 1. Set the update in history to Stable
             // 2. Write the update to the locations array
             Logger.debug(getSelf().path().name() + " set " + msg.epochSeqNum + " to stable.");
