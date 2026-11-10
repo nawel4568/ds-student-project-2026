@@ -3,25 +3,21 @@ package it.unitn.ds;
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Props;
-
 import java.io.Serializable;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
-
 import scala.concurrent.duration.Duration;
 
 /**
- * A channel actor that delivers messages to a fixed destination with random
- * delay, but preserving FIFO order. One instance per (sender, destination)
- * pair.
+ * A channel actor that delivers messages to a fixed destination with random delay, but preserving FIFO order. One
+ * instance per (sender, destination) pair.
  */
 public class NetworkChannel extends AbstractActor {
 
     // Sent to self to trigger delivery of the head of the queue
-    private static class Deliver implements Serializable {
-    }
+    private static class Deliver implements Serializable {}
 
     private final ActorRef destination;
     private final int minLatency;
@@ -40,8 +36,7 @@ public class NetworkChannel extends AbstractActor {
     }
 
     public static Props props(ActorRef destination, int minLatency, int maxLatency) {
-        return Props.create(NetworkChannel.class,
-                () -> new NetworkChannel(destination, minLatency, maxLatency));
+        return Props.create(NetworkChannel.class, () -> new NetworkChannel(destination, minLatency, maxLatency));
     }
 
     @Override
@@ -53,7 +48,7 @@ public class NetworkChannel extends AbstractActor {
     }
 
     private void onEnqueue(Object msg, ActorRef sender) {
-        queue.add(new Object[] { msg, sender });
+        queue.add(new Object[] {msg, sender});
         if (!delivering) {
             scheduleNextDelivery();
         }
@@ -79,11 +74,14 @@ public class NetworkChannel extends AbstractActor {
     private void scheduleNextDelivery() {
         delivering = true;
         int delay = minLatency + rnd.nextInt(maxLatency - minLatency);
-        getContext().system().scheduler().scheduleOnce(
-                Duration.create(delay, TimeUnit.MILLISECONDS),
-                getSelf(),
-                new Deliver(),
-                getContext().system().dispatcher(),
-                getSelf());
+        getContext()
+                .system()
+                .scheduler()
+                .scheduleOnce(
+                        Duration.create(delay, TimeUnit.MILLISECONDS),
+                        getSelf(),
+                        new Deliver(),
+                        getContext().system().dispatcher(),
+                        getSelf());
     }
 }

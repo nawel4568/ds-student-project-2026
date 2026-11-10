@@ -1,12 +1,10 @@
 package it.unitn.ds;
 
 import akka.actor.ActorRef;
-import akka.actor.Props;
 import akka.actor.Cancellable;
-
-import java.util.*;
-
+import akka.actor.Props;
 import java.time.Duration;
+import java.util.*;
 
 public class Client extends AbstractClient {
 
@@ -14,18 +12,27 @@ public class Client extends AbstractClient {
     private final Map<Integer, Cancellable> readTimeoutList = new HashMap<>();
     private final Map<Integer, Cancellable> writeTimeoutList = new HashMap<>();
 
-
-    Client(long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica, Optional<ActorRef> listener) {
+    Client(
+            long readTimeoutDelay,
+            long writeTimeoutDelay,
+            Optional<ActorRef> defaultTargetReplica,
+            Optional<ActorRef> listener) {
         super(readTimeoutDelay, writeTimeoutDelay, listener, defaultTargetReplica);
     }
 
     public static Props props(long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica) {
-        return Props.create(Client.class, () -> new Client(readTimeoutDelay, writeTimeoutDelay, defaultTargetReplica, Optional.empty()));
+        return Props.create(
+                Client.class,
+                () -> new Client(readTimeoutDelay, writeTimeoutDelay, defaultTargetReplica, Optional.empty()));
     }
 
     // Props method for automated tests
-    public static Props propsWithListener(long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica, ActorRef listener) {
-        return Props.create(Client.class, () -> new Client(readTimeoutDelay, writeTimeoutDelay, defaultTargetReplica, Optional.ofNullable(listener)));
+    public static Props propsWithListener(
+            long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica, ActorRef listener) {
+        return Props.create(
+                Client.class,
+                () -> new Client(
+                        readTimeoutDelay, writeTimeoutDelay, defaultTargetReplica, Optional.ofNullable(listener)));
     }
 
     /* Cancelling Read timeout */
@@ -48,16 +55,19 @@ public class Client extends AbstractClient {
     @Override
     public void sendRead(ActorRef replica, int index) {
         cancelReadTimeout(index);
-        Logger.log("[Client "+getSelf().path().name() + "] requesting READ (" + index + ") to Replica " + replica.path().name());
+        Logger.log("[Client " + getSelf().path().name() + "] requesting READ (" + index + ") to Replica "
+                + replica.path().name());
         replica.tell(new Replica.ReadReqMsg(index), getSelf());
 
-        Cancellable readTimeout = getContext().getSystem().scheduler().scheduleOnce(
-                Duration.ofMillis(getReadTimeoutDelay()),
-                getSelf(),
-                new ReadTimeout(getSelf(), replica, index),
-                getContext().system().dispatcher(),
-                getSelf()
-        );
+        Cancellable readTimeout = getContext()
+                .getSystem()
+                .scheduler()
+                .scheduleOnce(
+                        Duration.ofMillis(getReadTimeoutDelay()),
+                        getSelf(),
+                        new ReadTimeout(getSelf(), replica, index),
+                        getContext().system().dispatcher(),
+                        getSelf());
         readTimeoutList.put(index, readTimeout);
     }
 
@@ -66,16 +76,19 @@ public class Client extends AbstractClient {
         /* To be checked since the Write does not need to wait for a reply and
         should the Write to the same index trigger the cancellation of the old timeout */
         cancelWriteTimeout(index);
-        Logger.log("[Client " + getSelf().path().name() + "] requesting WRITE (" + index + ", " + value + ") to Replica " + replica.path().name());
+        Logger.log("[Client " + getSelf().path().name() + "] requesting WRITE (" + index + ", " + value
+                + ") to Replica " + replica.path().name());
         replica.tell(new Replica.WriteReqMsg(index, value), getSelf());
 
-        Cancellable writeTimeout = getContext().getSystem().scheduler().scheduleOnce(
-                Duration.ofMillis(getWriteTimeoutDelay()),
-                getSelf(),
-                new WriteTimeout(getSelf(), replica, index, value),
-                getContext().system().dispatcher(),
-                getSelf()
-        );
+        Cancellable writeTimeout = getContext()
+                .getSystem()
+                .scheduler()
+                .scheduleOnce(
+                        Duration.ofMillis(getWriteTimeoutDelay()),
+                        getSelf(),
+                        new WriteTimeout(getSelf(), replica, index, value),
+                        getContext().system().dispatcher(),
+                        getSelf());
         writeTimeoutList.put(index, writeTimeout);
     }
 
@@ -93,8 +106,9 @@ public class Client extends AbstractClient {
     private void onReadTimeout(ReadTimeout msg) {
         callbackOnReadTimeout(new ReadTimeout(msg.client, msg.replica, msg.index));
     }
+
     private void onWriteTimeout(WriteTimeout msg) {
-        callbackOnWriteTimeout(new WriteTimeout(msg.client,msg.replica, msg.index, msg.value));
+        callbackOnWriteTimeout(new WriteTimeout(msg.client, msg.replica, msg.index, msg.value));
     }
 
     @Override
@@ -106,6 +120,4 @@ public class Client extends AbstractClient {
                 .match(WriteTimeout.class, this::onWriteTimeout)
                 .build();
     }
-
-
 }

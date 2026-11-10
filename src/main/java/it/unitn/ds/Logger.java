@@ -20,15 +20,13 @@ public final class Logger {
     }
 
     private static final Object LOCK = new Object();
-    private static final DateTimeFormatter FORMATTER =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
     private static Destination destination = Destination.STDOUT;
     private static boolean debugEnabled = false;
     private static boolean loggingEnabled = true;
 
-    private static Writer writer =
-            new BufferedWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8));
+    private static Writer writer = new BufferedWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8));
 
     private static Path logPath = null;
 
@@ -42,8 +40,7 @@ public final class Logger {
         synchronized (LOCK) {
             closeWriterIfNeeded();
             destination = Destination.STDOUT;
-            writer = new BufferedWriter(
-                    new OutputStreamWriter(System.out, StandardCharsets.UTF_8));
+            writer = new BufferedWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8));
         }
     }
 
@@ -55,11 +52,7 @@ public final class Logger {
                 Files.deleteIfExists(logPath);
 
                 writer = Files.newBufferedWriter(
-                        logPath,
-                        StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.APPEND
-                );
+                        logPath, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
 
                 destination = Destination.FILE;
 
@@ -106,12 +99,7 @@ public final class Logger {
 
     private static void write(String level, String message) {
         String line = String.format(
-                "%s [%s] %s%s",
-                LocalDateTime.now().format(FORMATTER),
-                level,
-                message,
-                System.lineSeparator()
-        );
+                "%s [%s] %s%s", LocalDateTime.now().format(FORMATTER), level, message, System.lineSeparator());
 
         synchronized (LOCK) {
             try {
@@ -128,6 +116,7 @@ public final class Logger {
             if (destination == Destination.FILE && writer != null) {
                 writer.close();
             }
-        } catch (IOException ignored) {}
+        } catch (IOException ignored) {
+        }
     }
 }

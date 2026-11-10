@@ -1,7 +1,6 @@
 package it.unitn.ds;
 
 import akka.actor.ActorRef;
-import scala.collection.generic.BitOperations;
 
 public class LocationUpdate {
     public final int index;
@@ -20,7 +19,7 @@ public class LocationUpdate {
         this.replicaRequested = replicaRequested;
     }
 
-    public LocationUpdate(LocationUpdate other){
+    public LocationUpdate(LocationUpdate other) {
         this.index = other.index;
         this.value = other.value;
         this.status = other.status;
@@ -29,11 +28,11 @@ public class LocationUpdate {
         this.replicaRequested = other.replicaRequested;
     }
 
-    public void setStable(){
+    public void setStable() {
         this.status = UpdateStatus.STABLE;
     }
 
-    public void setUnstable(){
+    public void setUnstable() {
         this.status = UpdateStatus.UNSTABLE;
     }
 
@@ -49,5 +48,4 @@ public class LocationUpdate {
         UNSTABLE,
         STABLE
     }
-
 }

@@ -2,8 +2,6 @@ package it.unitn.ds;
 
 import akka.actor.ActorRef;
 import akka.actor.Props;
-
-import javax.xml.stream.Location;
 import java.io.Serializable;
 import java.util.*;
 
@@ -13,12 +11,16 @@ public class Replica extends AbstractReplica {
     private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
 
-    private  EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
+    private EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
     private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
 
-
     public Replica(int id) {
-        this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
+        this(
+                id,
+                AbstractReplica.MIN_LATENCY,
+                AbstractReplica.MAX_LATENCY,
+                AbstractReplica.COORDINATOR_BEAT_INTERVAL,
+                Optional.empty());
     }
 
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
@@ -32,12 +34,17 @@ public class Replica extends AbstractReplica {
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
-        return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.empty()));
+        return Props.create(
+                Replica.class,
+                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.empty()));
     }
 
     // Props method for automated tests
-    public static Props propsWithListener(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, ActorRef listener) {
-        return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
+    public static Props propsWithListener(
+            int id, int minLatency, int maxLatency, int coordinatorBeatInterval, ActorRef listener) {
+        return Props.create(
+                Replica.class,
+                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
     }
 
     @Override
@@ -76,14 +83,16 @@ public class Replica extends AbstractReplica {
     /* Read Request from Client */
     public static class ReadReqMsg implements Serializable {
         int index;
-        public ReadReqMsg(int index){
+
+        public ReadReqMsg(int index) {
             this.index = index;
         }
-
     }
+
     private void onReadReqMsg(ReadReqMsg msg) {
         /* Send the Value back to the Client */
-        Logger.debug(getSelf().path().name() + " Received a Read Request from " + getSender().path().name());
+        Logger.debug(getSelf().path().name() + " Received a Read Request from "
+                + getSender().path().name());
         getSender().tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSelf());
     }
 
@@ -91,15 +100,17 @@ public class Replica extends AbstractReplica {
     public static class WriteReqMsg implements Serializable {
         int index;
         int value;
-        public WriteReqMsg(int index, int value){
+
+        public WriteReqMsg(int index, int value) {
             this.index = index;
             this.value = value;
         }
-
     }
+
     private void onWriteReqMsg(WriteReqMsg msg) {
         /* Send an Update Request to the coordinator */
-        Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
+        Logger.debug(getSelf().path().name() + " Received a Write Request from "
+                + getSender().path().name());
 
         this.replicasGroup.get(coordinator_id).tell(new UpdateRequestMsg(msg.index, msg.value, getSender()), getSelf());
     }
@@ -109,6 +120,7 @@ public class Replica extends AbstractReplica {
         int index;
         int value;
         ActorRef clientRequesting; // to know which is the client to send the msg of WriteResult to
+
         public UpdateRequestMsg(int index, int value, ActorRef clientRequesting) {
             this.index = index;
             this.value = value;
@@ -124,7 +136,8 @@ public class Replica extends AbstractReplica {
 
     private void onUpdateRequestMsg(UpdateRequestMsg msg) {
         // this is received only by the coordinator
-        Logger.debug(getSelf().path().name() + " Received an Update Request from " + getSender().path().name());
+        Logger.debug(getSelf().path().name() + " Received an Update Request from "
+                + getSender().path().name());
 
         // Coordinator Receives the Update Msg from a Replica
         this.lastUpdate = this.lastUpdate.incrementSeqNum();
@@ -133,8 +146,11 @@ public class Replica extends AbstractReplica {
         currentUpdate.increaseQuorum();
         updatesHistory.put(this.lastUpdate, currentUpdate);
 
-        Utils.broadcastUpdate(getSelf(), this.replicasGroup, new Replica.UpdateMsg(new EpochSeqNum(this.lastUpdate), currentUpdate)); // Broadcast the Update to other Replicas
-
+        Utils.broadcastUpdate(
+                getSelf(),
+                this.replicasGroup,
+                new Replica.UpdateMsg(
+                        new EpochSeqNum(this.lastUpdate), currentUpdate)); // Broadcast the Update to other Replicas
     }
 
     public static class UpdateMsg {
@@ -149,15 +165,16 @@ public class Replica extends AbstractReplica {
 
     private void onUpdateMsg(UpdateMsg msg) {
         // Message received by Replica from Coordinator
-        Logger.debug(getSelf().path().name() + " Received an Update Msg from " + getSender().path().name());
+        Logger.debug(getSelf().path().name() + " Received an Update Msg from "
+                + getSender().path().name());
         this.lastUpdate = new EpochSeqNum(msg.epochSeqNum);
         updatesHistory.put(this.lastUpdate, new LocationUpdate(msg.currentUpdate));
         getSender().tell(new AckMsg(this.lastUpdate), getSelf());
-
     }
 
     public static class AckMsg {
         EpochSeqNum epochSeqNum;
+
         public AckMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
         }
@@ -165,16 +182,17 @@ public class Replica extends AbstractReplica {
 
     private void onAckMsg(AckMsg msg) {
         // Received by the Coordinator from Replicas
-        Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name() + " for update " + msg.epochSeqNum.toString());
+        Logger.debug(getSelf().path().name() + " Received an ACK Msg from "
+                + getSender().path().name() + " for update " + msg.epochSeqNum.toString());
         LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
-        currentUpdate.quorum ++;
-        LocationUpdate localUpdate = updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
+        currentUpdate.quorum++;
+        LocationUpdate localUpdate =
+                updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
 
-        if(currentUpdate.quorum < (replicasGroup.size()/2)) {
+        if (currentUpdate.quorum < (replicasGroup.size() / 2)) {
             // add the updated quorum and do nothing
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
-        }
-        else if(!localUpdate.isStable()) { // the if is to skip the ACK msg after th update is set to stable already
+        } else if (!localUpdate.isStable()) { // the if is to skip the ACK msg after th update is set to stable already
             // 1. Set the update in history to Stable
             // 2. Write the update to the locations array
             Logger.debug(getSelf().path().name() + " set " + msg.epochSeqNum + " to stable.");
@@ -184,34 +202,36 @@ public class Replica extends AbstractReplica {
             callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
             Utils.broadcastWriteOK(getSelf(), this.replicasGroup, new Replica.WriteOKMsg(msg.epochSeqNum));
             if (getSelf() == currentUpdate.replicaRequested) {
-                currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+                currentUpdate.clientRequesting.tell(
+                        new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id),
+                        getSelf());
             }
         }
     }
 
     public static class WriteOKMsg {
         EpochSeqNum epochSeqNum;
+
         public WriteOKMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
-
         }
     }
 
     private void onWriteOKMsg(WriteOKMsg msg) {
         // Received by the Replicas
-        Logger.debug(getSelf().path().name() + " Received a WriteOK from " + getSender().path().name());
+        Logger.debug(getSelf().path().name() + " Received a WriteOK from "
+                + getSender().path().name());
 
         LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
         currentUpdate.setStable();
         updatesHistory.put(msg.epochSeqNum, currentUpdate);
-        // Logger.debug(getSelf().path().name() + " Write " + currentUpdate.value + " to locations with index " + currentUpdate.index);
+        // Logger.debug(getSelf().path().name() + " Write " + currentUpdate.value + " to locations with index " +
+        // currentUpdate.index);
         locations[currentUpdate.index] = currentUpdate.value;
         callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
         if (getSelf() == currentUpdate.replicaRequested) {
-            currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+            currentUpdate.clientRequesting.tell(
+                    new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
         }
-
     }
-
-
 }

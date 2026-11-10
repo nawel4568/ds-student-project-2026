@@ -1,14 +1,13 @@
 package it.unitn.ds;
 
+import akka.actor.AbstractActor;
+import akka.actor.ActorRef;
+import akka.japi.pf.ReceiveBuilder;
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-
-import akka.actor.AbstractActor;
-import akka.actor.ActorRef;
-import akka.japi.pf.ReceiveBuilder;
 
 public abstract class AbstractReplica extends AbstractActor {
     // === Constants ===
@@ -46,16 +45,12 @@ public abstract class AbstractReplica extends AbstractActor {
     // Getters and Setters
     // =================================================================================
 
-    /**
-     * 
-     * @return coordinator beat interval in milliseconds
-     */
+    /** @return coordinator beat interval in milliseconds */
     public int getCoordinatorBeatInterval() {
         return coordinatorBeatInterval;
     }
 
     /**
-     * 
      * @param min_latency in milliseconds
      * @param max_latency in milliseconds
      */
@@ -64,29 +59,19 @@ public abstract class AbstractReplica extends AbstractActor {
         this.maxLatency = max_latency;
     }
 
-    /**
-     * 
-     * @return minimum latency in milliseconds
-     */
+    /** @return minimum latency in milliseconds */
     public int getMinLatency() {
         return minLatency;
     }
 
-    /**
-     * 
-     * @return maximum latency in milliseconds
-     */
+    /** @return maximum latency in milliseconds */
     public int getMaxLatency() {
         return maxLatency;
     }
 
-    /**
-     * 
-     * @return maximum latency + tolerance (based on the number of replicas) in
-     *         milliseconds
-     */
+    /** @return maximum latency + tolerance (based on the number of replicas) in milliseconds */
     public int getMaxLatencyPlusTolerance() {
-        return maxLatency + (int)((float)maxLatency/2.0 * getSystemNumberOfActors());
+        return maxLatency + (int) ((float) maxLatency / 2.0 * getSystemNumberOfActors());
     }
 
     // =================================================================================
@@ -95,9 +80,12 @@ public abstract class AbstractReplica extends AbstractActor {
 
     void tell(Serializable m, ActorRef dst) {
         // Lazily create one channel actor per destination
-        ActorRef channel = channels.computeIfAbsent(dst, d -> getContext().actorOf(
-                NetworkChannel.props(d, getMinLatency(), getMaxLatency()),
-                "channel_to_" + d.path().name()));
+        ActorRef channel = channels.computeIfAbsent(
+                dst,
+                d -> getContext()
+                        .actorOf(
+                                NetworkChannel.props(d, getMinLatency(), getMaxLatency()),
+                                "channel_to_" + d.path().name()));
         channel.tell(m, getSelf());
     }
 
@@ -119,32 +107,24 @@ public abstract class AbstractReplica extends AbstractActor {
 
     /**
      * Encapsulates the initialization data required to set up a replica system.
-     * <p>
-     * This includes the full group of replicas participating in the system and
-     * the identifier of the coordinator replica.
-     * </p>
      *
-     * <p>
-     * The {@code group} map is made unmodifiable to ensure immutability after
-     * construction.
-     * </p>
+     * <p>This includes the full group of replicas participating in the system and the identifier of the coordinator
+     * replica.
+     *
+     * <p>The {@code group} map is made unmodifiable to ensure immutability after construction.
      */
     public static class InitSystem implements Serializable {
 
-        /**
-         * Mapping from replica identifiers to their corresponding {@link ActorRef}.
-         */
+        /** Mapping from replica identifiers to their corresponding {@link ActorRef}. */
         public final Map<Integer, ActorRef> group;
 
-        /**
-         * The identifier of the coordinator replica within the group.
-         */
+        /** The identifier of the coordinator replica within the group. */
         public final int coordinator_id;
 
         /**
          * Constructs a new {@code InitSystem} object.
          *
-         * @param group          a mapping of replica IDs to their actor references
+         * @param group a mapping of replica IDs to their actor references
          * @param coordinator_id the ID of the coordinator replica
          */
         public InitSystem(Map<Integer, ActorRef> group, int coordinator_id) {
@@ -155,70 +135,48 @@ public abstract class AbstractReplica extends AbstractActor {
 
     /**
      * Represents a crash configuration for a component in the system.
-     * <p>
-     * A {@code Crash} object specifies when a crash should occur based on
-     * the type of message being processed and how many such messages have
-     * been handled before the crash is triggered.
-     * </p>
      *
-     * <p>
-     * This class is immutable and serializable.
-     * </p>
+     * <p>A {@code Crash} object specifies when a crash should occur based on the type of message being processed and
+     * how many such messages have been handled before the crash is triggered.
+     *
+     * <p>This class is immutable and serializable.
      */
     public static class Crash implements Serializable {
 
-        /**
-         * Enumeration of message types that can trigger a crash.
-         */
+        /** Enumeration of message types that can trigger a crash. */
         public enum Type {
-            /**
-             * Crash immediately.
-             */
+            /** Crash immediately. */
             Now,
 
-            /**
-             * Crash after processing heartbeat messages.
-             */
+            /** Crash after processing heartbeat messages. */
             Heartbeat,
 
-            /**
-             * Crash after processing update messages.
-             */
+            /** Crash after processing update messages. */
             Update,
 
-            /**
-             * Crash after processing write acknowledgment messages.
-             */
+            /** Crash after processing write acknowledgment messages. */
             WriteOK,
 
-            /**
-             * Crash after processing election-related messages.
-             */
+            /** Crash after processing election-related messages. */
             Election
         }
 
-        /**
-         * The type of message that determines when the crash will occur.
-         */
+        /** The type of message that determines when the crash will occur. */
         public final Crash.Type type;
 
         /**
-         * The number of messages of the specified {@link #type} to process
-         * before triggering the crash.
-         * <p>
-         * After this threshold is reached, the component is expected to crash,
-         * meaning it will stop responding to any further messages.
-         * </p>
+         * The number of messages of the specified {@link #type} to process before triggering the crash.
+         *
+         * <p>After this threshold is reached, the component is expected to crash, meaning it will stop responding to
+         * any further messages.
          */
         public final int after_n_messages_of_type;
 
         /**
          * Constructs a new {@code Crash} configuration.
          *
-         * @param type                     the type of message that triggers the crash
-         *                                 condition
-         * @param after_n_messages_of_type the number of messages of the given type
-         *                                 to process before crashing
+         * @param type the type of message that triggers the crash condition
+         * @param after_n_messages_of_type the number of messages of the given type to process before crashing
          */
         public Crash(Crash.Type type, int after_n_messages_of_type) {
             this.type = type;
@@ -227,21 +185,18 @@ public abstract class AbstractReplica extends AbstractActor {
 
         /**
          * Compares this {@code Crash} object with another object for equality.
-         * <p>
-         * Two {@code Crash} instances are considered equal if they have the same
-         * {@link #type} and the same {@link #after_n_messages_of_type}.
-         * </p>
+         *
+         * <p>Two {@code Crash} instances are considered equal if they have the same {@link #type} and the same
+         * {@link #after_n_messages_of_type}.
          *
          * @param obj the object to compare with
-         * @return {@code true} if the given object is equal to this instance;
-         *         {@code false} otherwise
+         * @return {@code true} if the given object is equal to this instance; {@code false} otherwise
          */
         @Override
         public boolean equals(Object obj) {
             if (obj instanceof Crash) {
                 Crash other = (Crash) obj;
-                return this.type == other.type &&
-                        this.after_n_messages_of_type == other.after_n_messages_of_type;
+                return this.type == other.type && this.after_n_messages_of_type == other.after_n_messages_of_type;
             }
             return false;
         }
@@ -326,11 +281,9 @@ public abstract class AbstractReplica extends AbstractActor {
     // =================================================================================
 
     /**
-     * Must be invoked whenever this replica recognises a new coordinator.
-     * Call this both when:
-     * - the replica IS the new coordinator (after deciding it won the election),
-     * and
-     * - the replica receives a Synchronization message from the new coordinator.
+     * Must be invoked whenever this replica recognises a new coordinator. Call this both when: - the replica IS the new
+     * coordinator (after deciding it won the election), and - the replica receives a Synchronization message from the
+     * new coordinator.
      *
      * @param newCoordinatorId the id of the newly elected coordinator
      */
@@ -340,8 +293,8 @@ public abstract class AbstractReplica extends AbstractActor {
     }
 
     /**
-     * Must be invoked whenever this replica applies an update to its local state
-     * (i.e. right after updating positions[]).
+     * Must be invoked whenever this replica applies an update to its local state (i.e. right after updating
+     * positions[]).
      *
      * @param index the position index that was updated
      * @param value the new value written at that index
@@ -352,11 +305,10 @@ public abstract class AbstractReplica extends AbstractActor {
     }
 
     /**
-     * Must be invoked whenever this replica starts or joins a coordinator election.
-     * Call this exactly once per election participation.
+     * Must be invoked whenever this replica starts or joins a coordinator election. Call this exactly once per election
+     * participation.
      *
-     * @param crashedCoordinatorId the id of the coordinator whose crash triggered
-     *                             this election
+     * @param crashedCoordinatorId the id of the coordinator whose crash triggered this election
      */
     final void callbackOnElectionStarted(int crashedCoordinatorId) {
         log("ELECTION STARTED for crashed coordinator: " + crashedCoordinatorId);
@@ -394,37 +346,27 @@ public abstract class AbstractReplica extends AbstractActor {
     // Abstract Methods
     // =================================================================================
 
-    /**
-     * 
-     * @return Total number of replicas in the system (including this instance)
-     */
-    abstract public int getSystemNumberOfActors();
+    /** @return Total number of replicas in the system (including this instance) */
+    public abstract int getSystemNumberOfActors();
 
     /**
      * Triggers a crash in the replica according to the specified configuration.
-     * <p>
-     * The behavior of the crash is defined by the provided
-     * {@link AbstractReplica.Crash}
-     * object, which determines when and how the replica should stop responding
-     * to incoming messages.
-     * </p>
      *
-     * @param how_to_crash the crash configuration describing the type of messages
-     *                     to monitor and how many of them should be processed
-     *                     before the crash is triggered
+     * <p>The behavior of the crash is defined by the provided {@link AbstractReplica.Crash} object, which determines
+     * when and how the replica should stop responding to incoming messages.
+     *
+     * @param how_to_crash the crash configuration describing the type of messages to monitor and how many of them
+     *     should be processed before the crash is triggered
      */
-    abstract public void crash(AbstractReplica.Crash how_to_crash);
+    public abstract void crash(AbstractReplica.Crash how_to_crash);
 
     /**
      * Initializes the replica with system-wide configuration.
-     * <p>
-     * This method provides the replica with the full set of participants in the
-     * system and identifies the coordinator. It is typically called once during
-     * system setup before normal operation begins.
-     * </p>
      *
-     * @param sysInit the initialization data containing the replica group and
-     *                coordinator identifier
+     * <p>This method provides the replica with the full set of participants in the system and identifies the
+     * coordinator. It is typically called once during system setup before normal operation begins.
+     *
+     * @param sysInit the initialization data containing the replica group and coordinator identifier
      */
-    abstract public void initSystem(AbstractReplica.InitSystem sysInit);
+    public abstract void initSystem(AbstractReplica.InitSystem sysInit);
 }

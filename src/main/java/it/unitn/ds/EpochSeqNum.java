@@ -3,7 +3,7 @@ package it.unitn.ds;
 import java.io.Serializable;
 import java.util.Objects;
 
-public class EpochSeqNum implements Serializable, Comparable<EpochSeqNum>{
+public class EpochSeqNum implements Serializable, Comparable<EpochSeqNum> {
     public int epoch;
     public int seqNum;
 
@@ -17,13 +17,13 @@ public class EpochSeqNum implements Serializable, Comparable<EpochSeqNum>{
         this.seqNum = other.seqNum;
     }
 
-    public void incrementEpoch(){
+    public void incrementEpoch() {
         this.epoch = this.epoch + 1;
         this.seqNum = 0;
     }
 
-    public EpochSeqNum incrementSeqNum(){
-        return new EpochSeqNum(this.epoch, this.seqNum+1);
+    public EpochSeqNum incrementSeqNum() {
+        return new EpochSeqNum(this.epoch, this.seqNum + 1);
     }
 
     @Override
@@ -48,6 +48,4 @@ public class EpochSeqNum implements Serializable, Comparable<EpochSeqNum>{
     public String toString() {
         return "<" + epoch + "," + seqNum + ">";
     }
-
-
 }
