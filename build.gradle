@@ -1,6 +1,7 @@
 plugins {
     id 'java'
     id 'application'
+    id("com.diffplug.spotless") version "8.11.0"
 }
 
 application {
@@ -24,16 +25,16 @@ dependencies {
 
     // Test dependencies
     testImplementation "com.typesafe.akka:akka-testkit_${versions.ScalaBinary}"
-	testImplementation(platform('org.junit:junit-bom:6.0.1'))
-	testImplementation('org.junit.jupiter:junit-jupiter')
-	testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+    testImplementation(platform('org.junit:junit-bom:6.0.1'))
+    testImplementation('org.junit.jupiter:junit-jupiter')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
 }
 
 test {
-	useJUnitPlatform()
-	testLogging {
-		events "passed", "skipped", "failed"
-	}
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
 }
 
 compileJava {
@@ -42,4 +43,22 @@ compileJava {
 
 run {
     standardInput = System.in
+}
+spotless {
+  // optional: limit format enforcement to just the files changed by this feature branch
+  ratchetFrom 'origin/main'
+
+  format 'misc', {
+    // define the files to apply `misc` to
+    target '*.gradle', '.gitattributes', '.gitignore'
+
+    // define the steps to apply to those files
+    trimTrailingWhitespace()
+    leadingTabsToSpaces()
+    endWithNewline()
+  }
+  java {
+    palantirJavaFormat().formatJavadoc(true)
+    // googleJavaFormat().aosp()
+  }
 }
