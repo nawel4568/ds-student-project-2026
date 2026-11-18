@@ -43,8 +43,7 @@ public class Replica extends AbstractReplica {
 
     @Override
     public int getSystemNumberOfActors() {
-        // TODO: implement
-        return 0;
+        return replicasGroup.size();
     }
 
     private void clearReceive() {
@@ -193,7 +192,7 @@ public class Replica extends AbstractReplica {
         currentUpdate.quorum ++;
         LocationUpdate localUpdate = updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
 
-        if (currentUpdate.quorum < replicasGroup.size() / 2 + 1) {
+        if (currentUpdate.quorum < getSystemNumberOfActors() / 2 + 1) {
             // add the updated quorum and do nothing
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
         } else if (!localUpdate.isStable()) { // the if is to skip the ACK msg after the update is set to stable already
