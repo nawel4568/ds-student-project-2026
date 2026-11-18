@@ -3,7 +3,6 @@ package it.unitn.ds;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 
-import javax.xml.stream.Location;
 import java.io.Serializable;
 import java.util.*;
 
@@ -16,6 +15,8 @@ public class Replica extends AbstractReplica {
     private  EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
     private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
 
+    private Crash.Type crashOn;
+    private int crashBudget;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
@@ -46,9 +47,24 @@ public class Replica extends AbstractReplica {
         return 0;
     }
 
+    private void clearReceive() {
+        getContext().become(receiveBuilder().matchAny(m -> {}).build());
+    }
+
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
-        // TODO: implement
+        // TODO: missing to be handled:
+        // - Heartbeat
+        // - Election
+        switch (how_to_crash.type) {
+            case Crash.Type.Now:
+                clearReceive();
+                break;
+
+            default:
+                crashOn = how_to_crash.type;
+                crashBudget = how_to_crash.after_n_messages_of_type;
+        }
     }
 
     @Override
@@ -124,6 +140,9 @@ public class Replica extends AbstractReplica {
     }
 
     private void onUpdateRequestMsg(UpdateRequestMsg msg) {
+        if (crashOn == Crash.Type.Update && --crashBudget <= 0)
+            clearReceive();
+
         // this is received only by the coordinator
         Logger.debug(getSelf().path().name() + " Received an Update Request from " + getSender().path().name());
 
@@ -149,6 +168,9 @@ public class Replica extends AbstractReplica {
     }
 
     private void onUpdateMsg(UpdateMsg msg) {
+        if (crashOn == Crash.Type.Update && --crashBudget <= 0)
+            clearReceive();
+
         // Message received by Replica from Coordinator
         Logger.debug(getSelf().path().name() + " Received an Update Msg from " + getSender().path().name());
         this.lastUpdate = new EpochSeqNum(msg.epochSeqNum);
@@ -198,6 +220,9 @@ public class Replica extends AbstractReplica {
     }
 
     private void onWriteOKMsg(WriteOKMsg msg) {
+        if (crashOn == Crash.Type.WriteOK && --crashBudget <= 0)
+            clearReceive();
+
         // Received by the Replicas
         Logger.debug(getSelf().path().name() + " Received a WriteOK from " + getSender().path().name());
 
