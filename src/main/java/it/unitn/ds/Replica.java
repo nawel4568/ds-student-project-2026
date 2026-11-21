@@ -45,58 +45,18 @@ public class Replica extends AbstractReplica {
         return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
     }
 
-    void broadcast(Serializable msg) {
-        for(ActorRef replica : this.replicasGroup.values())
-            if(!replica.equals(this.getSelf())){
-                tell(msg, replica);
-            }
-    }
-
-    public int getHeartbeatTimeout() {
-        return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
-    }
+    // =================================================================================
+    // System API
+    // =================================================================================
 
     @Override
     public int getSystemNumberOfActors() {
         return replicasGroup.size();
     }
 
-    private void clearReceive() {
-        getContext().become(receiveBuilder().matchAny(m -> {}).build());
-    }
-
-    /* Call after processing a message of type t */
-    private void crashIf(Crash.Type t) {
-        if (crashTrigger.tick(t))
-            clearReceive();
-    }
-
-    private Cancellable schedule(Serializable msg, long delayMillis) {
-        return getContext().system().getScheduler().scheduleOnce(
-                Duration.ofMillis(delayMillis),
-                getSelf(),
-                msg,
-                getContext().system().dispatcher(),
-                ActorRef.noSender());
-    }
-
-    @Override
-    public void crash(AbstractReplica.Crash how_to_crash) {
-        // TODO: missing to be handled:
-        // - Election
-        switch (how_to_crash.type) {
-            case Crash.Type.Now:
-                clearReceive();
-                break;
-
-            default:
-                crashTrigger.arm(how_to_crash);
-        }
-    }
-
     @Override
     public void initSystem(InitSystem sysInit) {
-        Logger.debug("Replica " + this.id + " is starting.");
+        debug("starting");
         this.coordinator_id = sysInit.coordinator_id;
         this.replicasGroup.putAll(sysInit.group);
 
@@ -128,89 +88,138 @@ public class Replica extends AbstractReplica {
                 .build();
     }
 
+    // =================================================================================
+    // Network and timers
+    // =================================================================================
 
-    /* Messages: see Messages.java */
+    void broadcast(Serializable msg) {
+        for (ActorRef replica : this.replicasGroup.values())
+            if (!replica.equals(getSelf()))
+                tell(msg, replica);
+    }
+
+    private Cancellable schedule(Serializable msg, long delayMillis) {
+        return getContext().system().getScheduler().scheduleOnce(
+                Duration.ofMillis(delayMillis),
+                getSelf(),
+                msg,
+                getContext().system().dispatcher(),
+                ActorRef.noSender());
+    }
+
+    // =================================================================================
+    // Crash emulation
+    // =================================================================================
+
+    @Override
+    public void crash(AbstractReplica.Crash how_to_crash) {
+        // TODO: missing to be handled:
+        // - Election
+        switch (how_to_crash.type) {
+            case Crash.Type.Now:
+                clearReceive(); // AbstractReplica logs CRASHED right after this
+                break;
+
+            default:
+                crashTrigger.arm(how_to_crash);
+        }
+    }
+
+    private void clearReceive() {
+        getContext().become(receiveBuilder().matchAny(m -> {}).build());
+    }
+
+    /* Call after processing a message of type t */
+    private void crashIf(Crash.Type t) {
+        if (crashTrigger.tick(t)) {
+            clearReceive();
+            log("CRASHED");
+        }
+    }
+
+    // =================================================================================
+    // Client requests
+    // =================================================================================
 
     private void onReadReqMsg(ReadReqMsg msg) {
-        /* Send the Value back to the Client */
-        Logger.debug(getSelf().path().name() + " Received a Read Request from " + getSender().path().name());
+        debug("received READ (" + msg.index + ") from " + getSender().path().name());
         tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSender());
     }
 
     private void onWriteReqMsg(WriteReqMsg msg) {
-        /* Send an Update Request to the coordinator */
-        Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
-
+        debug("received WRITE (" + msg.index + ", " + msg.value + ") from " + getSender().path().name());
         tell(new UpdateRequestMsg(msg.index, msg.value, getSender()), this.replicasGroup.get(coordinator_id));
     }
 
-    private void onUpdateRequestMsg(UpdateRequestMsg msg) {
-        // this is received only by the coordinator
-        Logger.debug(getSelf().path().name() + " Received an Update Request from " + getSender().path().name());
+    // =================================================================================
+    // Two-phase update
+    // =================================================================================
 
-        // Coordinator Receives the Update Msg from a Replica
+    /* Coordinator: start the two-phase broadcast for a forwarded write */
+    private void onUpdateRequestMsg(UpdateRequestMsg msg) {
+        debug("received UPDATE REQUEST from " + getSender().path().name());
+
         this.lastUpdate = this.lastUpdate.incrementSeqNum();
-        LocationUpdate currentUpdate = new LocationUpdate(msg.index, msg.value, msg.clientRequesting, getSender());
-        currentUpdate.setUnstable();
-        currentUpdate.increaseQuorum();
-        updatesHistory.put(this.lastUpdate, currentUpdate);
+        LocationUpdate update = new LocationUpdate(msg.index, msg.value, msg.clientRequesting, getSender());
+        update.setUnstable();
+        update.increaseQuorum(); // the coordinator is part of the quorum
+        updatesHistory.put(this.lastUpdate, update);
 
         broadcast(new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.clientRequesting, getSender()));
         crashIf(Crash.Type.Update);
     }
 
+    /* Replica: store the pending update and ack it */
     private void onUpdateMsg(UpdateMsg msg) {
-        // Message received by Replica from Coordinator
-        Logger.debug(getSelf().path().name() + " Received an Update Msg from " + getSender().path().name());
+        debug("received UPDATE " + msg.epochSeqNum + " from " + getSender().path().name());
+
         this.lastUpdate = msg.epochSeqNum;
         LocationUpdate update = new LocationUpdate(msg.index, msg.value, msg.clientRequesting, msg.replicaRequested);
         update.setUnstable();
         updatesHistory.put(this.lastUpdate, update);
+
         tell(new AckMsg(this.lastUpdate), getSender());
         crashIf(Crash.Type.Update);
-
     }
 
+    /* Coordinator: commit once a quorum acked; later acks are ignored */
     private void onAckMsg(AckMsg msg) {
-        // Received by the Coordinator from Replicas
-        Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name() + " for update " + msg.epochSeqNum.toString());
-        LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
-        currentUpdate.quorum++;
-        LocationUpdate localUpdate = updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
+        debug("received ACK " + msg.epochSeqNum + " from " + getSender().path().name());
 
-        if (currentUpdate.quorum < getSystemNumberOfActors() / 2 + 1) {
-            // add the updated quorum and do nothing
-            updatesHistory.put(msg.epochSeqNum, currentUpdate);
-        } else if (!localUpdate.isStable()) { // the if is to skip the ACK msg after the update is set to stable already
-            // 1. Set the update in history to Stable
-            // 2. Write the update to the locations array
-            Logger.debug(getSelf().path().name() + " set " + msg.epochSeqNum + " to stable.");
-            currentUpdate.setStable();
-            updatesHistory.put(msg.epochSeqNum, currentUpdate);
-            locations[currentUpdate.index] = currentUpdate.value;
-            callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
-            broadcast(new WriteOKMsg(msg.epochSeqNum));
-            if (getSelf() == currentUpdate.replicaRequested) {
-                tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), currentUpdate.clientRequesting);
-            }
-        }
+        LocationUpdate update = updatesHistory.get(msg.epochSeqNum);
+        update.increaseQuorum();
+        if (update.quorum < getSystemNumberOfActors() / 2 + 1 || update.isStable())
+            return;
+
+        applyUpdate(msg.epochSeqNum, update);
+        broadcast(new WriteOKMsg(msg.epochSeqNum));
     }
 
+    /* Replica: commit the update */
     private void onWriteOKMsg(WriteOKMsg msg) {
-        // Received by the Replicas
-        Logger.debug(getSelf().path().name() + " Received a WriteOK from " + getSender().path().name());
+        debug("received WRITEOK " + msg.epochSeqNum + " from " + getSender().path().name());
 
-        LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
-        currentUpdate.setStable();
-        updatesHistory.put(msg.epochSeqNum, currentUpdate);
-        // Logger.debug(getSelf().path().name() + " Write " + currentUpdate.value + " to locations with index " + currentUpdate.index);
-        locations[currentUpdate.index] = currentUpdate.value;
-        callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
-        if (getSelf() == currentUpdate.replicaRequested) {
-            tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), currentUpdate.clientRequesting);
-        }
+        applyUpdate(msg.epochSeqNum, updatesHistory.get(msg.epochSeqNum));
         crashIf(Crash.Type.WriteOK);
+    }
 
+    private void applyUpdate(EpochSeqNum key, LocationUpdate update) {
+        update.setStable();
+        locations[update.index] = update.value;
+        log("applied update " + key.epoch + ":" + key.seqNum + " (" + update.index + ", " + update.value + ")");
+        callbackOnUpdateApplied(update.index, update.value);
+
+        // only the replica contacted by the client replies to it
+        if (getSelf().equals(update.replicaRequested))
+            tell(new AbstractClient.WriteResult(true, update.index, update.value, this.id), update.clientRequesting);
+    }
+
+    // =================================================================================
+    // Failure detection
+    // =================================================================================
+
+    public int getHeartbeatTimeout() {
+        return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
     }
 
     /* Self-scheduled: time for the coordinator to send a heartbeat */
@@ -223,7 +232,9 @@ public class Replica extends AbstractReplica {
     }
 
     private void onHeartbeatMsg(HeartbeatMsg msg) {
-        if (msg.epoch < this.lastUpdate.epoch) return;
+        if (msg.epoch < this.lastUpdate.epoch)
+            return;
+
         // null until initSystem: ignore beats that overtake InitSystem
         if (this.coordinatorTimeout != null) {
             this.coordinatorTimeout.cancel();

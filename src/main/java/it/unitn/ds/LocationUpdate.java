@@ -1,7 +1,6 @@
 package it.unitn.ds;
 
 import akka.actor.ActorRef;
-import scala.collection.generic.BitOperations;
 
 public class LocationUpdate {
     public final int index;
