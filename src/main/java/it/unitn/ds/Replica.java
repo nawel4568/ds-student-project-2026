@@ -9,8 +9,6 @@ import java.time.Duration;
 import java.util.*;
 
 public class Replica extends AbstractReplica {
-    public static final int BEAT_TIMEOUT = COORDINATOR_BEAT_INTERVAL + MAX_LATENCY + 100;
-
     private final int[] locations = new int[AbstractReplica.POSITIONS_LIST_LENGTH]; // the stable values
     private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
@@ -21,7 +19,8 @@ public class Replica extends AbstractReplica {
     private Crash.Type crashOn;
     private int crashBudget;
 
-    private Cancellable beatCancellable;
+    private Cancellable heartbeatTimer; // coordinator: periodic HeartbeatTick to self
+    private Cancellable coordinatorTimeout; // replica: fires if the coordinator stays silent
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
@@ -44,6 +43,17 @@ public class Replica extends AbstractReplica {
     // Props method for automated tests
     public static Props propsWithListener(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, ActorRef listener) {
         return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
+    }
+
+    void broadcast(Serializable msg) {
+        for(ActorRef replica : this.replicasGroup.values())
+            if(!replica.equals(this.getSelf())){
+                tell(msg, replica);
+            }
+    }
+
+    public int getHeartbeatTimeout() {
+        return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
     }
 
     @Override
@@ -77,18 +87,15 @@ public class Replica extends AbstractReplica {
         this.replicasGroup.putAll(sysInit.group);
 
         if (this.id == this.coordinator_id) {
-            beatCancellable = getContext().system().getScheduler().scheduleWithFixedDelay(
+            heartbeatTimer = getContext().system().getScheduler().scheduleWithFixedDelay(
                     Duration.ZERO,
-                    Duration.ofMillis(this.getCoordinatorBeatInterval()),
-                    new Runnable() {
-                        @Override
-                        public void run() {
-                            getSelf().tell(new ScheduledMsg(ScheduledMsg.Type.SELF_BEAT), ActorRef.noSender());
-                        }
-                    },
-                    getContext().system().dispatcher());
+                    Duration.ofMillis(getCoordinatorBeatInterval()),
+                    getSelf(),
+                    new HeartbeatTick(),
+                    getContext().system().dispatcher(),
+                    ActorRef.noSender());
         } else {
-            scheduleBeatTimeout();
+            scheduleCoordinatorTimeout();
         }
     }
 
@@ -101,7 +108,9 @@ public class Replica extends AbstractReplica {
                 .match(UpdateMsg.class, this::onUpdateMsg)
                 .match(AckMsg.class, this::onAckMsg)
                 .match(WriteOKMsg.class, this::onWriteOKMsg)
-                .match(ScheduledMsg.class, this::onScheduledMsg)
+                .match(HeartbeatTick.class, this::onHeartbeatTick)
+                .match(HeartbeatMsg.class, this::onHeartbeatMsg)
+                .match(CoordinatorTimeout.class, this::onCoordinatorTimeout)
                 .build();
     }
 
@@ -176,8 +185,7 @@ public class Replica extends AbstractReplica {
         currentUpdate.increaseQuorum();
         updatesHistory.put(this.lastUpdate, currentUpdate);
 
-        Utils.broadcast(getSelf(), this.replicasGroup, new Replica.UpdateMsg(new EpochSeqNum(this.lastUpdate), currentUpdate)); // Broadcast the Update to other Replicas
-
+        broadcast(new Replica.UpdateMsg(new EpochSeqNum(this.lastUpdate), currentUpdate));
     }
 
     public static class UpdateMsg implements Serializable {
@@ -228,7 +236,7 @@ public class Replica extends AbstractReplica {
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
             locations[currentUpdate.index] = currentUpdate.value;
             callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
-            Utils.broadcast(getSelf(), this.replicasGroup, new Replica.WriteOKMsg(msg.epochSeqNum));
+            broadcast(new Replica.WriteOKMsg(msg.epochSeqNum));
             if (getSelf() == currentUpdate.replicaRequested) {
                 currentUpdate.clientRequesting.tell( new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
             }
@@ -263,57 +271,53 @@ public class Replica extends AbstractReplica {
 
     }
 
-    public static class ScheduledMsg implements Serializable {
-        public enum Type {
-            SELF_BEAT,
-            REPLICA_BEAT,
-            COORDINATOR_TIMEOUT
-        };
+    /* Self-scheduled: time for the coordinator to send a heartbeat */
+    public static class HeartbeatTick implements Serializable {
+    }
 
-        Type type;
+    private void onHeartbeatTick(HeartbeatTick msg) {
+        if (crashOn == Crash.Type.Heartbeat && --crashBudget <= 0)
+            clearReceive();
+
+        broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
+    }
+
+    /* Heartbeat from Coordinator to Replicas */
+    public static class HeartbeatMsg implements Serializable {
         int epoch;
 
-        public ScheduledMsg(Type type) {
-            this.type = type;
-        }
-
-        public ScheduledMsg(Type type, int epoch) {
-            this.type = type;
+        public HeartbeatMsg(int epoch) {
             this.epoch = epoch;
         }
     }
 
-    private void onScheduledMsg(ScheduledMsg msg) {
-        switch (msg.type) {
-            case ScheduledMsg.Type.SELF_BEAT:
-                Utils.broadcastUpdate(getSelf(), this.replicasGroup, new ScheduledMsg(ScheduledMsg.Type.REPLICA_BEAT, this.lastUpdate.epoch));
-                break;
+    private void onHeartbeatMsg(HeartbeatMsg msg) {
+        if (msg.epoch < this.lastUpdate.epoch) return;
 
-            case ScheduledMsg.Type.REPLICA_BEAT:
-                if (msg.epoch < this.lastUpdate.epoch) return;
+        if (crashOn == Crash.Type.Heartbeat && --crashBudget <= 0)
+            clearReceive();
 
-                if (crashOn == Crash.Type.Heartbeat && --crashBudget <= 0)
-                    clearReceive();
-
-                this.beatCancellable.cancel();
-                this.scheduleBeatTimeout();
-                break;
-
-            case ScheduledMsg.Type.COORDINATOR_TIMEOUT:
-                // TODO: Coordinator crashed, run election protocol.
-                break;
+        // null until initSystem: ignore beats that overtake InitSystem
+        if (this.coordinatorTimeout != null) {
+            this.coordinatorTimeout.cancel();
+            this.scheduleCoordinatorTimeout();
         }
     }
 
-    private void scheduleBeatTimeout() {
-        this.beatCancellable = getContext().system().getScheduler().scheduleOnce(
-                Duration.ofMillis(BEAT_TIMEOUT),
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        getSelf().tell(new ScheduledMsg(ScheduledMsg.Type.COORDINATOR_TIMEOUT), ActorRef.noSender());
-                    }
-                },
-                getContext().system().dispatcher());
+    /* Self-scheduled: no heartbeat from the coordinator within the timeout */
+    public static class CoordinatorTimeout implements Serializable {
+    }
+
+    private void onCoordinatorTimeout(CoordinatorTimeout msg) {
+        // TODO: Coordinator crashed, run election protocol.
+    }
+
+    private void scheduleCoordinatorTimeout() {
+        this.coordinatorTimeout = getContext().system().getScheduler().scheduleOnce(
+                Duration.ofMillis(getHeartbeatTimeout()),
+                getSelf(),
+                new CoordinatorTimeout(),
+                getContext().system().dispatcher(),
+                ActorRef.noSender());
     }
 }
