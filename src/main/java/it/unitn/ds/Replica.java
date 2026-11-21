@@ -130,7 +130,7 @@ public class Replica extends AbstractReplica {
     private void onReadReqMsg(ReadReqMsg msg) {
         /* Send the Value back to the Client */
         Logger.debug(getSelf().path().name() + " Received a Read Request from " + getSender().path().name());
-        getSender().tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSelf());
+        tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSender());
     }
 
     /* Write Request from Client */
@@ -149,7 +149,7 @@ public class Replica extends AbstractReplica {
         /* Send an Update Request to the coordinator */
         Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
 
-        this.replicasGroup.get(coordinator_id).tell(new UpdateRequestMsg(msg.index, msg.value, getSender()), getSelf());
+        tell(new UpdateRequestMsg(msg.index, msg.value, getSender()), this.replicasGroup.get(coordinator_id));
     }
 
     /* Update Request From Replica */
@@ -206,7 +206,7 @@ public class Replica extends AbstractReplica {
         Logger.debug(getSelf().path().name() + " Received an Update Msg from " + getSender().path().name());
         this.lastUpdate = new EpochSeqNum(msg.epochSeqNum);
         updatesHistory.put(this.lastUpdate, new LocationUpdate(msg.currentUpdate));
-        getSender().tell(new AckMsg(this.lastUpdate), getSelf());
+        tell(new AckMsg(this.lastUpdate), getSender());
 
     }
 
@@ -238,7 +238,7 @@ public class Replica extends AbstractReplica {
             callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
             broadcast(new Replica.WriteOKMsg(msg.epochSeqNum));
             if (getSelf() == currentUpdate.replicaRequested) {
-                currentUpdate.clientRequesting.tell( new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+                tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), currentUpdate.clientRequesting);
             }
         }
     }
@@ -266,7 +266,7 @@ public class Replica extends AbstractReplica {
         locations[currentUpdate.index] = currentUpdate.value;
         callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
         if (getSelf() == currentUpdate.replicaRequested) {
-            currentUpdate.clientRequesting.tell( new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+            tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), currentUpdate.clientRequesting);
         }
 
     }
