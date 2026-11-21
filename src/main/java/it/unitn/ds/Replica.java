@@ -9,16 +9,19 @@ import java.time.Duration;
 import java.util.*;
 
 public class Replica extends AbstractReplica {
+    public static final int BEAT_TIMEOUT = COORDINATOR_BEAT_INTERVAL + MAX_LATENCY + 100;
 
     private final int[] locations = new int[AbstractReplica.POSITIONS_LIST_LENGTH]; // the stable values
     private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
 
-    private  EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
+    private EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
     private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
 
     private Crash.Type crashOn;
     private int crashBudget;
+
+    private Cancellable beatCancellable;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
@@ -55,7 +58,6 @@ public class Replica extends AbstractReplica {
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
         // TODO: missing to be handled:
-        // - Heartbeat
         // - Election
         switch (how_to_crash.type) {
             case Crash.Type.Now:
@@ -75,19 +77,18 @@ public class Replica extends AbstractReplica {
         this.replicasGroup.putAll(sysInit.group);
 
         if (this.id == this.coordinator_id) {
-            getContext().system().getScheduler().scheduleWithFixedDelay(
-                Duration.ZERO,
-                Duration.ofMillis(this.getCoordinatorBeatInterval()),
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        getSelf().tell(new ScheduledMsg(ScheduledMsg.Type.SELF_BEAT), ActorRef.noSender());
-                    }
-                },
-                getContext().system().dispatcher()
-            );
+            beatCancellable = getContext().system().getScheduler().scheduleWithFixedDelay(
+                    Duration.ZERO,
+                    Duration.ofMillis(this.getCoordinatorBeatInterval()),
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            getSelf().tell(new ScheduledMsg(ScheduledMsg.Type.SELF_BEAT), ActorRef.noSender());
+                        }
+                    },
+                    getContext().system().dispatcher());
         } else {
-            // TODO: Start timeout for healthcheck
+            scheduleBeatTimeout();
         }
     }
 
@@ -110,11 +111,13 @@ public class Replica extends AbstractReplica {
     /* Read Request from Client */
     public static class ReadReqMsg implements Serializable {
         int index;
-        public ReadReqMsg(int index){
+
+        public ReadReqMsg(int index) {
             this.index = index;
         }
 
     }
+
     private void onReadReqMsg(ReadReqMsg msg) {
         /* Send the Value back to the Client */
         Logger.debug(getSelf().path().name() + " Received a Read Request from " + getSender().path().name());
@@ -125,12 +128,14 @@ public class Replica extends AbstractReplica {
     public static class WriteReqMsg implements Serializable {
         int index;
         int value;
-        public WriteReqMsg(int index, int value){
+
+        public WriteReqMsg(int index, int value) {
             this.index = index;
             this.value = value;
         }
 
     }
+
     private void onWriteReqMsg(WriteReqMsg msg) {
         /* Send an Update Request to the coordinator */
         Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
@@ -143,6 +148,7 @@ public class Replica extends AbstractReplica {
         int index;
         int value;
         ActorRef clientRequesting; // to know which is the client to send the msg of WriteResult to
+
         public UpdateRequestMsg(int index, int value, ActorRef clientRequesting) {
             this.index = index;
             this.value = value;
@@ -198,6 +204,7 @@ public class Replica extends AbstractReplica {
 
     public static class AckMsg implements Serializable {
         EpochSeqNum epochSeqNum;
+
         public AckMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
         }
@@ -207,7 +214,7 @@ public class Replica extends AbstractReplica {
         // Received by the Coordinator from Replicas
         Logger.debug(getSelf().path().name() + " Received an ACK Msg from " + getSender().path().name() + " for update " + msg.epochSeqNum.toString());
         LocationUpdate currentUpdate = updatesHistory.get(msg.epochSeqNum);
-        currentUpdate.quorum ++;
+        currentUpdate.quorum++;
         LocationUpdate localUpdate = updatesHistory.get(msg.epochSeqNum); // to manage the ACK msg after the WriteOK is broadcasted
 
         if (currentUpdate.quorum < getSystemNumberOfActors() / 2 + 1) {
@@ -223,13 +230,14 @@ public class Replica extends AbstractReplica {
             callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
             Utils.broadcast(getSelf(), this.replicasGroup, new Replica.WriteOKMsg(msg.epochSeqNum));
             if (getSelf() == currentUpdate.replicaRequested) {
-                currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+                currentUpdate.clientRequesting.tell( new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
             }
         }
     }
 
     public static class WriteOKMsg implements Serializable {
         EpochSeqNum epochSeqNum;
+
         public WriteOKMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
 
@@ -250,7 +258,7 @@ public class Replica extends AbstractReplica {
         locations[currentUpdate.index] = currentUpdate.value;
         callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
         if (getSelf() == currentUpdate.replicaRequested) {
-            currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
+            currentUpdate.clientRequesting.tell( new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
         }
 
     }
@@ -258,28 +266,54 @@ public class Replica extends AbstractReplica {
     public static class ScheduledMsg implements Serializable {
         public enum Type {
             SELF_BEAT,
-            REPLICA_BEAT
+            REPLICA_BEAT,
+            COORDINATOR_TIMEOUT
         };
 
         Type type;
+        int epoch;
+
         public ScheduledMsg(Type type) {
             this.type = type;
+        }
+
+        public ScheduledMsg(Type type, int epoch) {
+            this.type = type;
+            this.epoch = epoch;
         }
     }
 
     private void onScheduledMsg(ScheduledMsg msg) {
         switch (msg.type) {
             case ScheduledMsg.Type.SELF_BEAT:
-                Utils.broadcastUpdate(getSelf(), this.replicasGroup, new ScheduledMsg(ScheduledMsg.Type.REPLICA_BEAT));
+                Utils.broadcastUpdate(getSelf(), this.replicasGroup, new ScheduledMsg(ScheduledMsg.Type.REPLICA_BEAT, this.lastUpdate.epoch));
                 break;
 
             case ScheduledMsg.Type.REPLICA_BEAT:
+                if (msg.epoch < this.lastUpdate.epoch) return;
+
                 if (crashOn == Crash.Type.Heartbeat && --crashBudget <= 0)
                     clearReceive();
 
-                // TODO: Reset the replica timeout
+                this.beatCancellable.cancel();
+                this.scheduleBeatTimeout();
+                break;
+
+            case ScheduledMsg.Type.COORDINATOR_TIMEOUT:
+                // TODO: Coordinator crashed, run election protocol.
                 break;
         }
     }
 
+    private void scheduleBeatTimeout() {
+        this.beatCancellable = getContext().system().getScheduler().scheduleOnce(
+                Duration.ofMillis(BEAT_TIMEOUT),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        getSelf().tell(new ScheduledMsg(ScheduledMsg.Type.COORDINATOR_TIMEOUT), ActorRef.noSender());
+                    }
+                },
+                getContext().system().dispatcher());
+    }
 }
