@@ -12,9 +12,14 @@ public class Replica extends AbstractReplica {
     private final int[] locations = new int[AbstractReplica.POSITIONS_LIST_LENGTH]; // the stable values
     private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
+    private ActorRef successor;
 
     private  EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
     private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
+
+
+
+    public final SortedSet<ElectionUpdate> electionUpdateList = new TreeSet<>();
 
 
     public Replica(int id) {
@@ -25,6 +30,7 @@ public class Replica extends AbstractReplica {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
         this.replicasGroup = new HashMap<>();
         this.coordinator_id = this.id;
+        this.successor = ActorRef.noSender();
         this.lastUpdate = new EpochSeqNum(0, 0);
 
         this.updatesHistory = new LinkedHashMap<EpochSeqNum, LocationUpdate>();
@@ -57,6 +63,7 @@ public class Replica extends AbstractReplica {
         Logger.debug("Replica " + this.id + " is starting.");
         this.coordinator_id = sysInit.coordinator_id;
         this.replicasGroup.putAll(sysInit.group);
+        this.successor = this.replicasGroup.get((this.id+1) % this.replicasGroup.size());
     }
 
     @Override
@@ -68,6 +75,18 @@ public class Replica extends AbstractReplica {
                 .match(UpdateMsg.class, this::onUpdateMsg)
                 .match(AckMsg.class, this::onAckMsg)
                 .match(WriteOKMsg.class, this::onWriteOKMsg)
+                .match(ElectionMsg.class, this::onElectionMsg)
+                .build();
+    }
+
+    public final Receive electionBehavior() {
+        return createBaseReceiveBuilder()
+                // TODO:
+                // - handle the read & write messages
+                // - handle the ACKElection message
+                // - handle Sync massage
+                // - handle another Election (best candidate crashes)
+                .matchAny(msg -> {})
                 .build();
     }
 
@@ -214,5 +233,64 @@ public class Replica extends AbstractReplica {
 
     }
 
+
+    public static class TimeoutMsg implements Serializable{
+        // can be sent if a timeout happens
+        public TimeoutMsg() {
+
+        }
+    }
+
+    private void onTimeoutMsg(TimeoutMsg msg) {
+        // Starting the Election protocol the first time to timeout
+        this.getContext().become(electionBehavior()); // switch to the election behavior
+
+        SortedSet<ElectionUpdate> updateList = new TreeSet<>();
+        updateList.add(new ElectionUpdate(this.id, this.lastUpdate));
+
+        ElectionMsg newElectionMsg = new ElectionMsg(updateList);
+
+        // send the message to the successor
+        this.successor.tell(newElectionMsg, this.getSelf());
+
+    }
+
+
+    public static class ElectionMsg implements Serializable{
+        public final SortedSet<ElectionUpdate> electionUpdateList;
+        public ElectionMsg(SortedSet<ElectionUpdate> electionUpdateList) {
+            this.electionUpdateList = Collections.unmodifiableSortedSet(new TreeSet<ElectionUpdate>(electionUpdateList));
+        }
+    }
+
+    private void onElectionMsg(ElectionMsg msg) {
+        // when receiving the election msg from the replica that detected the crash of the coord
+        this.getContext().become(electionBehavior()); // switch to the election behavior
+
+
+
+    }
+
+
+
+    // Data structure for election msg Update List
+    public static class ElectionUpdate implements Comparable<ElectionUpdate> {
+        public final int replicaID;
+        public final EpochSeqNum lastUpdate;
+
+        public ElectionUpdate(int replicaID, EpochSeqNum lastUpdate) {
+            this.replicaID = replicaID;
+            this.lastUpdate = new EpochSeqNum(lastUpdate);
+        }
+
+        @Override
+        public int compareTo(ElectionUpdate other) {
+            int compare = this.lastUpdate.compareTo(other.lastUpdate);
+            if(compare != 0)
+                return compare;
+            //otherwise compare by replica ID
+            return Integer.compare(this.replicaID, other.replicaID);
+        }
+    }
 
 }
