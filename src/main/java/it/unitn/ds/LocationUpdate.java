@@ -20,15 +20,6 @@ public class LocationUpdate {
         this.replicaRequested = replicaRequested;
     }
 
-    public LocationUpdate(LocationUpdate other){
-        this.index = other.index;
-        this.value = other.value;
-        this.status = other.status;
-        this.quorum = other.quorum;
-        this.clientRequesting = other.clientRequesting;
-        this.replicaRequested = other.replicaRequested;
-    }
-
     public void setStable(){
         this.status = UpdateStatus.STABLE;
     }

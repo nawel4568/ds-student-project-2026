@@ -49,7 +49,7 @@ public class Client extends AbstractClient {
     public void sendRead(ActorRef replica, int index) {
         cancelReadTimeout(index);
         Logger.log("[Client "+getSelf().path().name() + "] requesting READ (" + index + ") to Replica " + replica.path().name());
-        replica.tell(new Replica.ReadReqMsg(index), getSelf());
+        replica.tell(new Messages.ReadReqMsg(index), getSelf());
 
         Cancellable readTimeout = getContext().getSystem().scheduler().scheduleOnce(
                 Duration.ofMillis(getReadTimeoutDelay()),
@@ -67,7 +67,7 @@ public class Client extends AbstractClient {
         should the Write to the same index trigger the cancellation of the old timeout */
         cancelWriteTimeout(index);
         Logger.log("[Client " + getSelf().path().name() + "] requesting WRITE (" + index + ", " + value + ") to Replica " + replica.path().name());
-        replica.tell(new Replica.WriteReqMsg(index, value), getSelf());
+        replica.tell(new Messages.WriteReqMsg(index, value), getSelf());
 
         Cancellable writeTimeout = getContext().getSystem().scheduler().scheduleOnce(
                 Duration.ofMillis(getWriteTimeoutDelay()),

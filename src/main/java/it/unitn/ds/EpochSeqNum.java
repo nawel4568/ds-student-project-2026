@@ -3,23 +3,17 @@ package it.unitn.ds;
 import java.io.Serializable;
 import java.util.Objects;
 
-public class EpochSeqNum implements Serializable, Comparable<EpochSeqNum>{
-    public int epoch;
-    public int seqNum;
+public final class EpochSeqNum implements Serializable, Comparable<EpochSeqNum> {
+    public final int epoch;
+    public final int seqNum;
 
     public EpochSeqNum(int epoch, int seqNum) {
         this.epoch = epoch;
         this.seqNum = seqNum;
     }
 
-    public EpochSeqNum(EpochSeqNum other) {
-        this.epoch = other.epoch;
-        this.seqNum = other.seqNum;
-    }
-
-    public void incrementEpoch(){
-        this.epoch = this.epoch + 1;
-        this.seqNum = 0;
+    public EpochSeqNum incrementEpoch() {
+        return new EpochSeqNum(this.epoch + 1, 0);
     }
 
     public EpochSeqNum incrementSeqNum(){

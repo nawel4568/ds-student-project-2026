@@ -3,6 +3,7 @@ package it.unitn.ds;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
+import it.unitn.ds.Messages.*;
 
 import java.io.Serializable;
 import java.time.Duration;
@@ -115,17 +116,7 @@ public class Replica extends AbstractReplica {
     }
 
 
-    /* Messages */
-
-    /* Read Request from Client */
-    public static class ReadReqMsg implements Serializable {
-        int index;
-
-        public ReadReqMsg(int index) {
-            this.index = index;
-        }
-
-    }
+    /* Messages: see Messages.java */
 
     private void onReadReqMsg(ReadReqMsg msg) {
         /* Send the Value back to the Client */
@@ -133,42 +124,11 @@ public class Replica extends AbstractReplica {
         tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSender());
     }
 
-    /* Write Request from Client */
-    public static class WriteReqMsg implements Serializable {
-        int index;
-        int value;
-
-        public WriteReqMsg(int index, int value) {
-            this.index = index;
-            this.value = value;
-        }
-
-    }
-
     private void onWriteReqMsg(WriteReqMsg msg) {
         /* Send an Update Request to the coordinator */
         Logger.debug(getSelf().path().name() + " Received a Write Request from " + getSender().path().name());
 
         tell(new UpdateRequestMsg(msg.index, msg.value, getSender()), this.replicasGroup.get(coordinator_id));
-    }
-
-    /* Update Request From Replica */
-    public static class UpdateRequestMsg implements Serializable{
-        int index;
-        int value;
-        ActorRef clientRequesting; // to know which is the client to send the msg of WriteResult to
-
-        public UpdateRequestMsg(int index, int value, ActorRef clientRequesting) {
-            this.index = index;
-            this.value = value;
-            this.clientRequesting = clientRequesting;
-        }
-
-        public UpdateRequestMsg(UpdateRequestMsg other) {
-            this.index = other.index;
-            this.value = other.value;
-            this.clientRequesting = other.clientRequesting;
-        }
     }
 
     private void onUpdateRequestMsg(UpdateRequestMsg msg) {
@@ -185,17 +145,7 @@ public class Replica extends AbstractReplica {
         currentUpdate.increaseQuorum();
         updatesHistory.put(this.lastUpdate, currentUpdate);
 
-        broadcast(new Replica.UpdateMsg(new EpochSeqNum(this.lastUpdate), currentUpdate));
-    }
-
-    public static class UpdateMsg implements Serializable {
-        EpochSeqNum epochSeqNum;
-        LocationUpdate currentUpdate;
-
-        public UpdateMsg(EpochSeqNum epochSeqNum, LocationUpdate currentUpdate) {
-            this.epochSeqNum = epochSeqNum;
-            this.currentUpdate = currentUpdate;
-        }
+        broadcast(new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.clientRequesting, getSender()));
     }
 
     private void onUpdateMsg(UpdateMsg msg) {
@@ -204,18 +154,12 @@ public class Replica extends AbstractReplica {
 
         // Message received by Replica from Coordinator
         Logger.debug(getSelf().path().name() + " Received an Update Msg from " + getSender().path().name());
-        this.lastUpdate = new EpochSeqNum(msg.epochSeqNum);
-        updatesHistory.put(this.lastUpdate, new LocationUpdate(msg.currentUpdate));
+        this.lastUpdate = msg.epochSeqNum;
+        LocationUpdate update = new LocationUpdate(msg.index, msg.value, msg.clientRequesting, msg.replicaRequested);
+        update.setUnstable();
+        updatesHistory.put(this.lastUpdate, update);
         tell(new AckMsg(this.lastUpdate), getSender());
 
-    }
-
-    public static class AckMsg implements Serializable {
-        EpochSeqNum epochSeqNum;
-
-        public AckMsg(EpochSeqNum epochSeqNum) {
-            this.epochSeqNum = epochSeqNum;
-        }
     }
 
     private void onAckMsg(AckMsg msg) {
@@ -236,19 +180,10 @@ public class Replica extends AbstractReplica {
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
             locations[currentUpdate.index] = currentUpdate.value;
             callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
-            broadcast(new Replica.WriteOKMsg(msg.epochSeqNum));
+            broadcast(new WriteOKMsg(msg.epochSeqNum));
             if (getSelf() == currentUpdate.replicaRequested) {
                 tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), currentUpdate.clientRequesting);
             }
-        }
-    }
-
-    public static class WriteOKMsg implements Serializable {
-        EpochSeqNum epochSeqNum;
-
-        public WriteOKMsg(EpochSeqNum epochSeqNum) {
-            this.epochSeqNum = epochSeqNum;
-
         }
     }
 
@@ -272,7 +207,7 @@ public class Replica extends AbstractReplica {
     }
 
     /* Self-scheduled: time for the coordinator to send a heartbeat */
-    public static class HeartbeatTick implements Serializable {
+    private static final class HeartbeatTick implements Serializable {
     }
 
     private void onHeartbeatTick(HeartbeatTick msg) {
@@ -280,15 +215,6 @@ public class Replica extends AbstractReplica {
             clearReceive();
 
         broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
-    }
-
-    /* Heartbeat from Coordinator to Replicas */
-    public static class HeartbeatMsg implements Serializable {
-        int epoch;
-
-        public HeartbeatMsg(int epoch) {
-            this.epoch = epoch;
-        }
     }
 
     private void onHeartbeatMsg(HeartbeatMsg msg) {
@@ -305,7 +231,7 @@ public class Replica extends AbstractReplica {
     }
 
     /* Self-scheduled: no heartbeat from the coordinator within the timeout */
-    public static class CoordinatorTimeout implements Serializable {
+    private static final class CoordinatorTimeout implements Serializable {
     }
 
     private void onCoordinatorTimeout(CoordinatorTimeout msg) {
