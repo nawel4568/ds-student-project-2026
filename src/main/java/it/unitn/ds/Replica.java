@@ -71,6 +71,7 @@ public class Replica extends AbstractReplica {
                 .build();
     }
 
+
     /* Messages */
 
     /* Read Request from Client */
@@ -105,7 +106,7 @@ public class Replica extends AbstractReplica {
     }
 
     /* Update Request From Replica */
-    public static class UpdateRequestMsg {
+    public static class UpdateRequestMsg implements Serializable{
         int index;
         int value;
         ActorRef clientRequesting; // to know which is the client to send the msg of WriteResult to
@@ -133,11 +134,11 @@ public class Replica extends AbstractReplica {
         currentUpdate.increaseQuorum();
         updatesHistory.put(this.lastUpdate, currentUpdate);
 
-        Utils.broadcastUpdate(getSelf(), this.replicasGroup, new Replica.UpdateMsg(new EpochSeqNum(this.lastUpdate), currentUpdate)); // Broadcast the Update to other Replicas
+        Utils.broadcast(getSelf(), this.replicasGroup, new Replica.UpdateMsg(new EpochSeqNum(this.lastUpdate), currentUpdate)); // Broadcast the Update to other Replicas
 
     }
 
-    public static class UpdateMsg {
+    public static class UpdateMsg implements Serializable{
         EpochSeqNum epochSeqNum;
         LocationUpdate currentUpdate;
 
@@ -156,7 +157,7 @@ public class Replica extends AbstractReplica {
 
     }
 
-    public static class AckMsg {
+    public static class AckMsg implements Serializable{
         EpochSeqNum epochSeqNum;
         public AckMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
@@ -182,14 +183,14 @@ public class Replica extends AbstractReplica {
             updatesHistory.put(msg.epochSeqNum, currentUpdate);
             locations[currentUpdate.index] = currentUpdate.value;
             callbackOnUpdateApplied(currentUpdate.index, currentUpdate.value);
-            Utils.broadcastWriteOK(getSelf(), this.replicasGroup, new Replica.WriteOKMsg(msg.epochSeqNum));
+            Utils.broadcast(getSelf(), this.replicasGroup, new Replica.WriteOKMsg(msg.epochSeqNum));
             if (getSelf() == currentUpdate.replicaRequested) {
                 currentUpdate.clientRequesting.tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), getSelf());
             }
         }
     }
 
-    public static class WriteOKMsg {
+    public static class WriteOKMsg implements Serializable{
         EpochSeqNum epochSeqNum;
         public WriteOKMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
