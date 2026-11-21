@@ -17,8 +17,7 @@ public class Replica extends AbstractReplica {
     private EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
     private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
 
-    private Crash.Type crashOn;
-    private int crashBudget;
+    private final CrashTrigger crashTrigger = new CrashTrigger();
 
     private Cancellable heartbeatTimer; // coordinator: periodic HeartbeatTick to self
     private Cancellable coordinatorTimeout; // replica: fires if the coordinator stays silent
@@ -66,6 +65,21 @@ public class Replica extends AbstractReplica {
         getContext().become(receiveBuilder().matchAny(m -> {}).build());
     }
 
+    /* Call after processing a message of type t */
+    private void crashIf(Crash.Type t) {
+        if (crashTrigger.tick(t))
+            clearReceive();
+    }
+
+    private Cancellable schedule(Serializable msg, long delayMillis) {
+        return getContext().system().getScheduler().scheduleOnce(
+                Duration.ofMillis(delayMillis),
+                getSelf(),
+                msg,
+                getContext().system().dispatcher(),
+                ActorRef.noSender());
+    }
+
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
         // TODO: missing to be handled:
@@ -76,8 +90,7 @@ public class Replica extends AbstractReplica {
                 break;
 
             default:
-                crashOn = how_to_crash.type;
-                crashBudget = how_to_crash.after_n_messages_of_type;
+                crashTrigger.arm(how_to_crash);
         }
     }
 
@@ -96,7 +109,7 @@ public class Replica extends AbstractReplica {
                     getContext().system().dispatcher(),
                     ActorRef.noSender());
         } else {
-            scheduleCoordinatorTimeout();
+            coordinatorTimeout = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
         }
     }
 
@@ -132,9 +145,6 @@ public class Replica extends AbstractReplica {
     }
 
     private void onUpdateRequestMsg(UpdateRequestMsg msg) {
-        if (crashOn == Crash.Type.Update && --crashBudget <= 0)
-            clearReceive();
-
         // this is received only by the coordinator
         Logger.debug(getSelf().path().name() + " Received an Update Request from " + getSender().path().name());
 
@@ -146,12 +156,10 @@ public class Replica extends AbstractReplica {
         updatesHistory.put(this.lastUpdate, currentUpdate);
 
         broadcast(new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.clientRequesting, getSender()));
+        crashIf(Crash.Type.Update);
     }
 
     private void onUpdateMsg(UpdateMsg msg) {
-        if (crashOn == Crash.Type.Update && --crashBudget <= 0)
-            clearReceive();
-
         // Message received by Replica from Coordinator
         Logger.debug(getSelf().path().name() + " Received an Update Msg from " + getSender().path().name());
         this.lastUpdate = msg.epochSeqNum;
@@ -159,6 +167,7 @@ public class Replica extends AbstractReplica {
         update.setUnstable();
         updatesHistory.put(this.lastUpdate, update);
         tell(new AckMsg(this.lastUpdate), getSender());
+        crashIf(Crash.Type.Update);
 
     }
 
@@ -188,9 +197,6 @@ public class Replica extends AbstractReplica {
     }
 
     private void onWriteOKMsg(WriteOKMsg msg) {
-        if (crashOn == Crash.Type.WriteOK && --crashBudget <= 0)
-            clearReceive();
-
         // Received by the Replicas
         Logger.debug(getSelf().path().name() + " Received a WriteOK from " + getSender().path().name());
 
@@ -203,6 +209,7 @@ public class Replica extends AbstractReplica {
         if (getSelf() == currentUpdate.replicaRequested) {
             tell(new AbstractClient.WriteResult(true, currentUpdate.index, currentUpdate.value, this.id), currentUpdate.clientRequesting);
         }
+        crashIf(Crash.Type.WriteOK);
 
     }
 
@@ -211,23 +218,18 @@ public class Replica extends AbstractReplica {
     }
 
     private void onHeartbeatTick(HeartbeatTick msg) {
-        if (crashOn == Crash.Type.Heartbeat && --crashBudget <= 0)
-            clearReceive();
-
         broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
+        crashIf(Crash.Type.Heartbeat);
     }
 
     private void onHeartbeatMsg(HeartbeatMsg msg) {
         if (msg.epoch < this.lastUpdate.epoch) return;
-
-        if (crashOn == Crash.Type.Heartbeat && --crashBudget <= 0)
-            clearReceive();
-
         // null until initSystem: ignore beats that overtake InitSystem
         if (this.coordinatorTimeout != null) {
             this.coordinatorTimeout.cancel();
-            this.scheduleCoordinatorTimeout();
+            this.coordinatorTimeout = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
         }
+        crashIf(Crash.Type.Heartbeat);
     }
 
     /* Self-scheduled: no heartbeat from the coordinator within the timeout */
@@ -236,14 +238,5 @@ public class Replica extends AbstractReplica {
 
     private void onCoordinatorTimeout(CoordinatorTimeout msg) {
         // TODO: Coordinator crashed, run election protocol.
-    }
-
-    private void scheduleCoordinatorTimeout() {
-        this.coordinatorTimeout = getContext().system().getScheduler().scheduleOnce(
-                Duration.ofMillis(getHeartbeatTimeout()),
-                getSelf(),
-                new CoordinatorTimeout(),
-                getContext().system().dispatcher(),
-                ActorRef.noSender());
     }
 }
