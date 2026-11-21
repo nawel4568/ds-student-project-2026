@@ -1,9 +1,11 @@
 package it.unitn.ds;
 
 import akka.actor.ActorRef;
+import akka.actor.Cancellable;
 import akka.actor.Props;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.*;
 
 public class Replica extends AbstractReplica {
@@ -68,10 +70,25 @@ public class Replica extends AbstractReplica {
 
     @Override
     public void initSystem(InitSystem sysInit) {
-        // TODO: implement
         Logger.debug("Replica " + this.id + " is starting.");
         this.coordinator_id = sysInit.coordinator_id;
         this.replicasGroup.putAll(sysInit.group);
+
+        if (this.id == this.coordinator_id) {
+            getContext().system().getScheduler().scheduleWithFixedDelay(
+                Duration.ZERO,
+                Duration.ofMillis(this.getCoordinatorBeatInterval()),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        getSelf().tell(new ScheduledMsg(ScheduledMsg.Type.SELF_BEAT), ActorRef.noSender());
+                    }
+                },
+                getContext().system().dispatcher()
+            );
+        } else {
+            // TODO: Start timeout for healthcheck
+        }
     }
 
     @Override
@@ -83,6 +100,7 @@ public class Replica extends AbstractReplica {
                 .match(UpdateMsg.class, this::onUpdateMsg)
                 .match(AckMsg.class, this::onAckMsg)
                 .match(WriteOKMsg.class, this::onWriteOKMsg)
+                .match(ScheduledMsg.class, this::onScheduledMsg)
                 .build();
     }
 
@@ -156,7 +174,7 @@ public class Replica extends AbstractReplica {
 
     }
 
-    public static class UpdateMsg implements Serializable{
+    public static class UpdateMsg implements Serializable {
         EpochSeqNum epochSeqNum;
         LocationUpdate currentUpdate;
 
@@ -178,7 +196,7 @@ public class Replica extends AbstractReplica {
 
     }
 
-    public static class AckMsg implements Serializable{
+    public static class AckMsg implements Serializable {
         EpochSeqNum epochSeqNum;
         public AckMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
@@ -210,7 +228,7 @@ public class Replica extends AbstractReplica {
         }
     }
 
-    public static class WriteOKMsg implements Serializable{
+    public static class WriteOKMsg implements Serializable {
         EpochSeqNum epochSeqNum;
         public WriteOKMsg(EpochSeqNum epochSeqNum) {
             this.epochSeqNum = epochSeqNum;
@@ -237,5 +255,31 @@ public class Replica extends AbstractReplica {
 
     }
 
+    public static class ScheduledMsg implements Serializable {
+        public enum Type {
+            SELF_BEAT,
+            REPLICA_BEAT
+        };
+
+        Type type;
+        public ScheduledMsg(Type type) {
+            this.type = type;
+        }
+    }
+
+    private void onScheduledMsg(ScheduledMsg msg) {
+        switch (msg.type) {
+            case ScheduledMsg.Type.SELF_BEAT:
+                Utils.broadcastUpdate(getSelf(), this.replicasGroup, new ScheduledMsg(ScheduledMsg.Type.REPLICA_BEAT));
+                break;
+
+            case ScheduledMsg.Type.REPLICA_BEAT:
+                if (crashOn == Crash.Type.Heartbeat && --crashBudget <= 0)
+                    clearReceive();
+
+                // TODO: Reset the replica timeout
+                break;
+        }
+    }
 
 }

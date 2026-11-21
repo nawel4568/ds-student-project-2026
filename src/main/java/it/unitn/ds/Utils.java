@@ -1,10 +1,8 @@
 package it.unitn.ds;
 
-import akka.actor.Actor;
 import akka.actor.ActorRef;
 
 import java.io.Serializable;
-import java.util.List;
 import java.util.Map;
 
 public class Utils {
