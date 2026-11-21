@@ -18,8 +18,8 @@ public class Replica extends AbstractReplica {
     private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
 
 
-
-    public final SortedSet<ElectionUpdate> electionUpdateList = new TreeSet<>();
+    // Election Variables
+    private final SortedSet<ElectionUpdate> electionUpdateList = new TreeSet<>();
 
 
     public Replica(int id) {
@@ -86,6 +86,7 @@ public class Replica extends AbstractReplica {
                 // - handle the ACKElection message
                 // - handle Sync massage
                 // - handle another Election (best candidate crashes)
+                .match(ElectionMsg.class, this::onLapCompElectionMsg)
                 .matchAny(msg -> {})
                 .build();
     }
@@ -243,32 +244,81 @@ public class Replica extends AbstractReplica {
 
     private void onTimeoutMsg(TimeoutMsg msg) {
         // Starting the Election protocol the first time to timeout
+        // 1. if timeout is HEARTBEAT, UPDATE, WRITEOK
         this.getContext().become(electionBehavior()); // switch to the election behavior
 
+        // create the Update List and add its id and its last update
         SortedSet<ElectionUpdate> updateList = new TreeSet<>();
         updateList.add(new ElectionUpdate(this.id, this.lastUpdate));
-
         ElectionMsg newElectionMsg = new ElectionMsg(updateList);
 
-        // send the message to the successor
-        this.successor.tell(newElectionMsg, this.getSelf());
+        // send the message (id, updateList) to the successor
+        tell(newElectionMsg, this.successor);
+        // TODO: set ACK timeout
+
+        // 2. if timeout is ELECTIONACK
+        // TODO: compute the next successor and send the ElectionMsg
+
+
+
 
     }
-
 
     public static class ElectionMsg implements Serializable{
         public final SortedSet<ElectionUpdate> electionUpdateList;
         public ElectionMsg(SortedSet<ElectionUpdate> electionUpdateList) {
             this.electionUpdateList = Collections.unmodifiableSortedSet(new TreeSet<ElectionUpdate>(electionUpdateList));
         }
+        public ElectionMsg(ElectionMsg other) {
+            this.electionUpdateList = other.electionUpdateList;
+        }
     }
 
     private void onElectionMsg(ElectionMsg msg) {
         // when receiving the election msg from the replica that detected the crash of the coord
-        this.getContext().become(electionBehavior()); // switch to the election behavior
+        // Sends an ACK back
+        tell(new ACKElectionMsg(), getSender());
+        // TODO:
+        //  - Cancel all the timeouts
+
+        // switch to the election behavior
+        this.getContext().become(electionBehavior());
+
+        // add its id and its last update to the Update List
+        SortedSet<ElectionUpdate> updateList = new TreeSet<>(msg.electionUpdateList);
+        updateList.add(new ElectionUpdate(this.id, this.lastUpdate));
+        ElectionMsg newElectionMsg = new ElectionMsg(updateList);
+
+        // send the message (id, updateList) to the successor node
+        tell(newElectionMsg, this.successor);
+        // TODO: set ACK timeout
 
 
+    }
 
+    private void onLapCompElectionMsg(ElectionMsg msg){
+        // When a Replica receives an Election message & it is in Election Behavior
+        // Sends an ACK back
+        tell(new ACKElectionMsg(), getSender());
+
+        // compute the current winner
+        ElectionUpdate winner = Collections.max(msg.electionUpdateList, ElectionUpdate::compareTo);
+        if (winner.replicaID == this.id) {
+            // This is the new coordinator: new epoch, finish pending update, send SYNCHRONIZATION
+        } else {
+            // forward ELECTION to the next live node in the ring
+            tell(new ElectionMsg(msg), this.successor);
+            // TODO: set ACK timeout
+        }
+    }
+
+    public static class ACKElectionMsg implements Serializable{
+        public ACKElectionMsg() {
+        }
+    }
+
+    private void onACKElectionMsg(ACKElectionMsg msg){
+        // cancel the ACK timeout
     }
 
 
