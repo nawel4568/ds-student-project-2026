@@ -34,7 +34,9 @@ public class Replica extends AbstractReplica {
         this.lastUpdate = new EpochSeqNum(0, 0);
 
         this.updatesHistory = new LinkedHashMap<EpochSeqNum, LocationUpdate>();
-        this.updatesHistory.put(lastUpdate, new LocationUpdate(0, 0, ActorRef.noSender(), ActorRef.noSender()));
+        LocationUpdate dummy = new LocationUpdate(0, 0, ActorRef.noSender(), ActorRef.noSender());
+        dummy.setStable();
+        this.updatesHistory.put(lastUpdate, dummy);
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -81,12 +83,11 @@ public class Replica extends AbstractReplica {
 
     public final Receive electionBehavior() {
         return createBaseReceiveBuilder()
-                // TODO:
-                // - handle the read & write messages
-                // - handle the ACKElection message
-                // - handle Sync massage
-                // - handle another Election (best candidate crashes)
+                // TODO: - handle another Election (best candidate crashes)
+                .match(ReadReqMsg.class, this::onReadReqMsg)
                 .match(ElectionMsg.class, this::onLapCompElectionMsg)
+                .match(SyncMsg.class, this::onSyncMsg)
+                .match(ACKElectionMsg.class, this::onACKElectionMsg)
                 .matchAny(msg -> {})
                 .build();
     }
@@ -244,7 +245,7 @@ public class Replica extends AbstractReplica {
 
     private void onTimeoutMsg(TimeoutMsg msg) {
         // Starting the Election protocol the first time to timeout
-        // 1. if timeout is HEARTBEAT, UPDATE, WRITEOK
+        // case 1) if timeout is HEARTBEAT, UPDATE, WRITEOK
         this.getContext().become(electionBehavior()); // switch to the election behavior
 
         // create the Update List and add its id and its last update
@@ -256,7 +257,7 @@ public class Replica extends AbstractReplica {
         tell(newElectionMsg, this.successor);
         // TODO: set ACK timeout
 
-        // 2. if timeout is ELECTIONACK
+        // case 2) if timeout is ELECTIONACK
         // TODO: compute the next successor and send the ElectionMsg
 
 
@@ -305,6 +306,7 @@ public class Replica extends AbstractReplica {
         ElectionUpdate winner = Collections.max(msg.electionUpdateList, ElectionUpdate::compareTo);
         if (winner.replicaID == this.id) {
             // This is the new coordinator: new epoch, finish pending update, send SYNCHRONIZATION
+            this.becomeCoordinator(msg.electionUpdateList);
         } else {
             // forward ELECTION to the next live node in the ring
             tell(new ElectionMsg(msg), this.successor);
@@ -319,6 +321,41 @@ public class Replica extends AbstractReplica {
 
     private void onACKElectionMsg(ACKElectionMsg msg){
         // cancel the ACK timeout
+    }
+
+    public static class SyncMsg implements Serializable {
+        public final int newEpoch;
+        public final int newCoordinatorId;
+        public final SortedMap<EpochSeqNum, LocationUpdate> missingUpdates;
+
+        public SyncMsg(int newEpoch, int newCoordinatorId, SortedMap<EpochSeqNum, LocationUpdate> missingUpdates) {
+            this.newEpoch = newEpoch;
+            this.newCoordinatorId = newCoordinatorId;
+            this.missingUpdates = Collections.unmodifiableSortedMap(new TreeMap<>(missingUpdates));
+        }
+    }
+
+    private void onSyncMsg(SyncMsg msg) {
+        // 1. Ignore stale or duplicate synchronizations
+        if (msg.newEpoch <= this.lastUpdate.epoch) return;
+
+        // TODO: cancel election timeout and ACK timeout
+
+        // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
+        for (Map.Entry<EpochSeqNum, LocationUpdate> e : msg.missingUpdates.entrySet()) {
+            LocationUpdate existing = updatesHistory.get(e.getKey());
+            if (existing != null && existing.isStable()) continue;   // already delivered
+            deliverUpdate(e.getKey(), new LocationUpdate(e.getValue()));
+        }
+
+        // 3. Adopt the new epoch and coordinator
+        this.coordinator_id = msg.newCoordinatorId;
+        this.lastUpdate = new EpochSeqNum(msg.newEpoch, 0);
+
+        // 4. Back to normal behavior
+        getContext().become(createReceive());
+
+        // TODO: reset the heartbeat timeout for the new coordinator
     }
 
 
@@ -340,6 +377,48 @@ public class Replica extends AbstractReplica {
                 return compare;
             //otherwise compare by replica ID
             return Integer.compare(this.replicaID, other.replicaID);
+        }
+    }
+
+    private void becomeCoordinator(SortedSet<ElectionUpdate> electionUpdateList){
+        // Set stable all pending updates, Become Coordinator, Send a sync Msg to the replicas announcing new coordinator
+        // and provide the other nodes with all the missing updates
+
+        TreeMap<EpochSeqNum, LocationUpdate> sorted = new TreeMap<>(updatesHistory);
+        // 1. Finish the local pending updates if any
+        for (Map.Entry<EpochSeqNum, LocationUpdate> e : sorted.entrySet()) {
+            if (!e.getValue().isStable()) {
+                deliverUpdate(e.getKey(), e.getValue());
+            }
+        }
+
+        // 2. Set a new epoch = epoch of the last update + 1 & the sequence number restarts at 0
+        int newEpoch = this.lastUpdate.epoch + 1;
+        this.coordinator_id = this.id;
+        this.lastUpdate = new EpochSeqNum(newEpoch, 0);
+
+        // 3. Send each replica only what it is missing, starting from its last update
+        for (ElectionUpdate eu : electionUpdateList) {
+            if (eu.replicaID == this.id) continue;
+            SortedMap<EpochSeqNum, LocationUpdate> missing = new TreeMap<>();
+            for (Map.Entry<EpochSeqNum, LocationUpdate> e : sorted.tailMap(eu.lastUpdate, true).entrySet()) {
+                missing.put(e.getKey(), new LocationUpdate(e.getValue()));
+            }
+            tell(new SyncMsg(newEpoch, this.id, missing), this.replicasGroup.get(eu.replicaID));
+        }
+
+        // 4. Leave the election behavior
+        getContext().become(createReceive());
+        // TODO: start sending HEARTBEATs
+    }
+
+    private void deliverUpdate(EpochSeqNum id, LocationUpdate u) {
+        u.setStable();
+        updatesHistory.put(id, u);
+        locations[u.index] = u.value;
+        callbackOnUpdateApplied(u.index, u.value);
+        if (getSelf() == u.replicaRequested) {
+            tell(new AbstractClient.WriteResult(true, u.index, u.value, this.id), u.clientRequesting);
         }
     }
 
