@@ -268,18 +268,14 @@ public class Replica extends AbstractReplica {
     }
 
     private void onCoordinatorTimeout(CoordinatorTimeout msg) {
-        // TODO: Coordinator crashed, run election protocol.
+        startElection();
     }
 
     // =================================================================================
     // Coordinator election
     // =================================================================================
 
-    /* Self-scheduled: can be sent if a timeout happens */
-    private static final class TimeoutMsg implements Serializable {
-    }
-
-    private void onTimeoutMsg(TimeoutMsg msg) {
+    private void startElection() {
         // Starting the Election protocol the first time to timeout
         // case 1) if timeout is HEARTBEAT, UPDATE, WRITEOK
         this.getContext().become(electionBehavior()); // switch to the election behavior
