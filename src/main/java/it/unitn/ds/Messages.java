@@ -1,6 +1,11 @@
 package it.unitn.ds;
 
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.SortedMap;
+import java.util.SortedSet;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 import akka.actor.ActorRef;
 
@@ -100,6 +105,40 @@ public final class Messages {
 
         public HeartbeatMsg(int epoch) {
             this.epoch = epoch;
+        }
+    }
+
+    // =================================================================================
+    // Coordinator election
+    // =================================================================================
+
+    /* Election token circulating on the ring, with each participant's last update */
+    public static final class ElectionMsg implements Serializable {
+        public final SortedSet<ElectionUpdate> electionUpdateList;
+
+        public ElectionMsg(SortedSet<ElectionUpdate> electionUpdateList) {
+            this.electionUpdateList = Collections.unmodifiableSortedSet(new TreeSet<>(electionUpdateList));
+        }
+
+        public ElectionMsg(ElectionMsg other) {
+            this.electionUpdateList = other.electionUpdateList;
+        }
+    }
+
+    /* Ack of an ElectionMsg, to the previous replica in the ring */
+    public static final class ACKElectionMsg implements Serializable {
+    }
+
+    /* New coordinator announcement, with the updates the receiver is missing */
+    public static final class SyncMsg implements Serializable {
+        public final int newEpoch;
+        public final int newCoordinatorId;
+        public final SortedMap<EpochSeqNum, LocationUpdate> missingUpdates;
+
+        public SyncMsg(int newEpoch, int newCoordinatorId, SortedMap<EpochSeqNum, LocationUpdate> missingUpdates) {
+            this.newEpoch = newEpoch;
+            this.newCoordinatorId = newCoordinatorId;
+            this.missingUpdates = Collections.unmodifiableSortedMap(new TreeMap<>(missingUpdates));
         }
     }
 }

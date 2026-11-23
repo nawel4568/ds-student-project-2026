@@ -26,7 +26,6 @@ public class Replica extends AbstractReplica {
     // Election Variables
     private final SortedSet<ElectionUpdate> electionUpdateList = new TreeSet<>();
 
-
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
     }
@@ -271,11 +270,13 @@ public class Replica extends AbstractReplica {
     private void onCoordinatorTimeout(CoordinatorTimeout msg) {
         // TODO: Coordinator crashed, run election protocol.
     }
-    public static class TimeoutMsg implements Serializable{
-        // can be sent if a timeout happens
-        public TimeoutMsg() {
 
-        }
+    // =================================================================================
+    // Coordinator election
+    // =================================================================================
+
+    /* Self-scheduled: can be sent if a timeout happens */
+    private static final class TimeoutMsg implements Serializable {
     }
 
     private void onTimeoutMsg(TimeoutMsg msg) {
@@ -294,20 +295,6 @@ public class Replica extends AbstractReplica {
 
         // case 2) if timeout is ELECTIONACK
         // TODO: compute the next successor and send the ElectionMsg
-
-
-
-
-    }
-
-    public static class ElectionMsg implements Serializable{
-        public final SortedSet<ElectionUpdate> electionUpdateList;
-        public ElectionMsg(SortedSet<ElectionUpdate> electionUpdateList) {
-            this.electionUpdateList = Collections.unmodifiableSortedSet(new TreeSet<ElectionUpdate>(electionUpdateList));
-        }
-        public ElectionMsg(ElectionMsg other) {
-            this.electionUpdateList = other.electionUpdateList;
-        }
     }
 
     private void onElectionMsg(ElectionMsg msg) {
@@ -328,11 +315,9 @@ public class Replica extends AbstractReplica {
         // send the message (id, updateList) to the successor node
         tell(newElectionMsg, this.successor);
         // TODO: set ACK timeout
-
-
     }
 
-    private void onLapCompElectionMsg(ElectionMsg msg){
+    private void onLapCompElectionMsg(ElectionMsg msg) {
         // When a Replica receives an Election message & it is in Election Behavior
         // Sends an ACK back
         tell(new ACKElectionMsg(), getSender());
@@ -349,37 +334,22 @@ public class Replica extends AbstractReplica {
         }
     }
 
-    public static class ACKElectionMsg implements Serializable{
-        public ACKElectionMsg() {
-        }
-    }
-
-    private void onACKElectionMsg(ACKElectionMsg msg){
+    private void onACKElectionMsg(ACKElectionMsg msg) {
         // cancel the ACK timeout
-    }
-
-    public static class SyncMsg implements Serializable {
-        public final int newEpoch;
-        public final int newCoordinatorId;
-        public final SortedMap<EpochSeqNum, LocationUpdate> missingUpdates;
-
-        public SyncMsg(int newEpoch, int newCoordinatorId, SortedMap<EpochSeqNum, LocationUpdate> missingUpdates) {
-            this.newEpoch = newEpoch;
-            this.newCoordinatorId = newCoordinatorId;
-            this.missingUpdates = Collections.unmodifiableSortedMap(new TreeMap<>(missingUpdates));
-        }
     }
 
     private void onSyncMsg(SyncMsg msg) {
         // 1. Ignore stale or duplicate synchronizations
-        if (msg.newEpoch <= this.lastUpdate.epoch) return;
+        if (msg.newEpoch <= this.lastUpdate.epoch)
+            return;
 
         // TODO: cancel election timeout and ACK timeout
 
         // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
         for (Map.Entry<EpochSeqNum, LocationUpdate> e : msg.missingUpdates.entrySet()) {
             LocationUpdate existing = updatesHistory.get(e.getKey());
-            if (existing != null && existing.isStable()) continue;   // already delivered
+            if (existing != null && existing.isStable())
+                continue; // already delivered
             deliverUpdate(e.getKey(), new LocationUpdate(e.getValue()));
         }
 
@@ -393,29 +363,7 @@ public class Replica extends AbstractReplica {
         // TODO: reset the heartbeat timeout for the new coordinator
     }
 
-
-
-    // Data structure for election msg Update List
-    public static class ElectionUpdate implements Comparable<ElectionUpdate> {
-        public final int replicaID;
-        public final EpochSeqNum lastUpdate;
-
-        public ElectionUpdate(int replicaID, EpochSeqNum lastUpdate) {
-            this.replicaID = replicaID;
-            this.lastUpdate = lastUpdate;
-        }
-
-        @Override
-        public int compareTo(ElectionUpdate other) {
-            int compare = this.lastUpdate.compareTo(other.lastUpdate);
-            if(compare != 0)
-                return compare;
-            //otherwise compare by replica ID
-            return Integer.compare(this.replicaID, other.replicaID);
-        }
-    }
-
-    private void becomeCoordinator(SortedSet<ElectionUpdate> electionUpdateList){
+    private void becomeCoordinator(SortedSet<ElectionUpdate> electionUpdateList) {
         // Set stable all pending updates, Become Coordinator, Send a sync Msg to the replicas announcing new coordinator
         // and provide the other nodes with all the missing updates
 
@@ -434,7 +382,8 @@ public class Replica extends AbstractReplica {
 
         // 3. Send each replica only what it is missing, starting from its last update
         for (ElectionUpdate eu : electionUpdateList) {
-            if (eu.replicaID == this.id) continue;
+            if (eu.replicaID == this.id)
+                continue;
             SortedMap<EpochSeqNum, LocationUpdate> missing = new TreeMap<>();
             for (Map.Entry<EpochSeqNum, LocationUpdate> e : sorted.tailMap(eu.lastUpdate, true).entrySet()) {
                 missing.put(e.getKey(), new LocationUpdate(e.getValue()));
