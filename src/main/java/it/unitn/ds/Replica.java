@@ -20,9 +20,6 @@ public class Replica extends AbstractReplica {
 
     private final CrashTrigger crashTrigger = new CrashTrigger();
 
-    private Cancellable heartbeatTimer; // coordinator: periodic HeartbeatTick to self
-    private Cancellable coordinatorTimeout; // replica: fires if the coordinator stays silent
-
     // Election Variables
     private final SortedSet<ElectionUpdate> electionUpdateList = new TreeSet<>();
 
@@ -53,6 +50,52 @@ public class Replica extends AbstractReplica {
     }
 
     // =================================================================================
+    // Heartbeat
+    // =================================================================================
+
+    // coordinator: periodic HeartbeatTick to self
+    // replica: fires if the coordinator stays silent
+    private Cancellable heartbeatTimer;
+
+    private void startHeartbeatTimer() {
+        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled())
+            this.heartbeatTimer.cancel();
+
+        this.heartbeatTimer = getContext().system().getScheduler().scheduleWithFixedDelay(
+                Duration.ZERO,
+                Duration.ofMillis(getCoordinatorBeatInterval()),
+                getSelf(),
+                new HeartbeatTick(),
+                getContext().system().dispatcher(),
+                ActorRef.noSender());
+    }
+
+    public int getHeartbeatTimeout() {
+        return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
+    }
+
+    /* Self-scheduled: time for the coordinator to send a heartbeat */
+    private static final class HeartbeatTick implements Serializable {
+    }
+
+    private void onHeartbeatTick(HeartbeatTick msg) {
+        broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
+        crashIf(Crash.Type.Heartbeat);
+    }
+
+    private void onHeartbeatMsg(HeartbeatMsg msg) {
+        if (msg.epoch < this.lastUpdate.epoch)
+            return;
+
+        // null before first heartbeat arrives.
+        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled()) {
+            this.heartbeatTimer.cancel();
+        }
+        this.heartbeatTimer = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
+        crashIf(Crash.Type.Heartbeat);
+    }
+
+    // =================================================================================
     // System API
     // =================================================================================
 
@@ -69,15 +112,7 @@ public class Replica extends AbstractReplica {
         this.successor = this.replicasGroup.get((this.id+1) % this.replicasGroup.size());
 
         if (this.id == this.coordinator_id) {
-            heartbeatTimer = getContext().system().getScheduler().scheduleWithFixedDelay(
-                    Duration.ZERO,
-                    Duration.ofMillis(getCoordinatorBeatInterval()),
-                    getSelf(),
-                    new HeartbeatTick(),
-                    getContext().system().dispatcher(),
-                    ActorRef.noSender());
-        } else {
-            coordinatorTimeout = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
+            startHeartbeatTimer();
         }
     }
 
@@ -237,31 +272,6 @@ public class Replica extends AbstractReplica {
     // =================================================================================
     // Failure detection
     // =================================================================================
-
-    public int getHeartbeatTimeout() {
-        return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
-    }
-
-    /* Self-scheduled: time for the coordinator to send a heartbeat */
-    private static final class HeartbeatTick implements Serializable {
-    }
-
-    private void onHeartbeatTick(HeartbeatTick msg) {
-        broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
-        crashIf(Crash.Type.Heartbeat);
-    }
-
-    private void onHeartbeatMsg(HeartbeatMsg msg) {
-        if (msg.epoch < this.lastUpdate.epoch)
-            return;
-
-        // null until initSystem: ignore beats that overtake InitSystem
-        if (this.coordinatorTimeout != null) {
-            this.coordinatorTimeout.cancel();
-            this.coordinatorTimeout = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
-        }
-        crashIf(Crash.Type.Heartbeat);
-    }
 
     /* Self-scheduled: no heartbeat from the coordinator within the timeout */
     private static final class CoordinatorTimeout implements Serializable {
