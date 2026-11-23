@@ -112,12 +112,26 @@ public class Replica extends AbstractReplica {
         this.successor = this.replicasGroup.get((this.id+1) % this.replicasGroup.size());
 
         if (this.id == this.coordinator_id) {
+            getContext().become(coordinatorBehavior());
             startHeartbeatTimer();
         }
     }
 
+    /* Default: normal replica behavior. */
     @Override
     public final Receive createReceive() {
+        return createBaseReceiveBuilder()
+                .match(ReadReqMsg.class, this::onReadReqMsg)
+                .match(WriteReqMsg.class, this::onWriteReqMsg)
+                .match(UpdateMsg.class, this::onUpdateMsg)
+                .match(WriteOKMsg.class, this::onWriteOKMsg)
+                .match(HeartbeatMsg.class, this::onHeartbeatMsg)
+                .match(CoordinatorTimeout.class, this::onCoordinatorTimeout)
+                .match(ElectionMsg.class, this::onElectionMsg)
+                .build();
+    }
+
+    public final Receive coordinatorBehavior() {
         return createBaseReceiveBuilder()
                 .match(ReadReqMsg.class, this::onReadReqMsg)
                 .match(WriteReqMsg.class, this::onWriteReqMsg)
@@ -126,9 +140,6 @@ public class Replica extends AbstractReplica {
                 .match(AckMsg.class, this::onAckMsg)
                 .match(WriteOKMsg.class, this::onWriteOKMsg)
                 .match(HeartbeatTick.class, this::onHeartbeatTick)
-                .match(HeartbeatMsg.class, this::onHeartbeatMsg)
-                .match(CoordinatorTimeout.class, this::onCoordinatorTimeout)
-                .match(ElectionMsg.class, this::onElectionMsg)
                 .build();
     }
 
@@ -289,6 +300,7 @@ public class Replica extends AbstractReplica {
         // Starting the Election protocol the first time to timeout
         // case 1) if timeout is HEARTBEAT, UPDATE, WRITEOK
         this.getContext().become(electionBehavior()); // switch to the election behavior
+        this.heartbeatTimer.cancel();
 
         // create the Update List and add its id and its last update
         SortedSet<ElectionUpdate> updateList = new TreeSet<>();
