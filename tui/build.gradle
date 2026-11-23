@@ -1,0 +1,19 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+application {
+    mainClass = "it.unitn.ds.tui.Tui"
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation rootProject
+    implementation platform("com.typesafe.akka:akka-bom_2.13:2.6.13")
+    implementation "com.typesafe.akka:akka-actor_2.13"
+    implementation "com.googlecode.lanterna:lanterna:3.1.3"
+}
