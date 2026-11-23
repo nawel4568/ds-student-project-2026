@@ -16,7 +16,9 @@ public class Replica extends AbstractReplica {
     private ActorRef successor;
 
     private EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
-    private LinkedHashMap<EpochSeqNum, LocationUpdate> updatesHistory;
+    private LinkedHashMap<EpochSeqNum, UpdateEntry> updatesHistory;
+    // Updates not applied yet -> acks received (only the coordinator counts them)
+    private final Map<EpochSeqNum, Integer> unstable = new HashMap<>();
 
     private final CrashTrigger crashTrigger = new CrashTrigger();
 
@@ -34,10 +36,8 @@ public class Replica extends AbstractReplica {
         this.successor = ActorRef.noSender();
         this.lastUpdate = new EpochSeqNum(0, 0);
 
-        this.updatesHistory = new LinkedHashMap<EpochSeqNum, LocationUpdate>();
-        LocationUpdate dummy = new LocationUpdate(0, 0, ActorRef.noSender(), ActorRef.noSender());
-        dummy.setStable();
-        this.updatesHistory.put(lastUpdate, dummy);
+        this.updatesHistory = new LinkedHashMap<EpochSeqNum, UpdateEntry>();
+        this.updatesHistory.put(lastUpdate, new UpdateEntry(0, 0, 0, ActorRef.noSender(), ActorRef.noSender()));
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -209,12 +209,18 @@ public class Replica extends AbstractReplica {
 
     private void onReadReqMsg(ReadReqMsg msg) {
         debug("received READ (" + msg.index + ") from " + getSender().path().name());
-        tell(new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id), getSender());
+        tell(
+            new ReadReplyMsg(msg.reqId, new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id)),
+            getSender()
+        );
     }
 
     private void onWriteReqMsg(WriteReqMsg msg) {
         debug("received WRITE (" + msg.index + ", " + msg.value + ") from " + getSender().path().name());
-        tell(new UpdateRequestMsg(msg.index, msg.value, getSender()), this.replicasGroup.get(coordinator_id));
+        tell(
+            new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender()), 
+            this.replicasGroup.get(coordinator_id)
+        );
     }
 
     // =================================================================================
@@ -226,12 +232,11 @@ public class Replica extends AbstractReplica {
         debug("received UPDATE REQUEST from " + getSender().path().name());
 
         this.lastUpdate = this.lastUpdate.incrementSeqNum();
-        LocationUpdate update = new LocationUpdate(msg.index, msg.value, msg.clientRequesting, getSender());
-        update.setUnstable();
-        update.increaseQuorum(); // the coordinator is part of the quorum
+        UpdateEntry update = new UpdateEntry(msg.index, msg.value, msg.reqId, msg.clientRequesting, getSender());
         updatesHistory.put(this.lastUpdate, update);
+        unstable.put(this.lastUpdate, 1); // the coordinator is part of the quorum
 
-        broadcast(new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.clientRequesting, getSender()));
+        broadcast(new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.reqId, msg.clientRequesting, getSender()));
         crashIf(Crash.Type.Update);
     }
 
@@ -240,9 +245,9 @@ public class Replica extends AbstractReplica {
         debug("received UPDATE " + msg.epochSeqNum + " from " + getSender().path().name());
 
         this.lastUpdate = msg.epochSeqNum;
-        LocationUpdate update = new LocationUpdate(msg.index, msg.value, msg.clientRequesting, msg.replicaRequested);
-        update.setUnstable();
-        updatesHistory.put(this.lastUpdate, update);
+        updatesHistory.put(this.lastUpdate,
+                new UpdateEntry(msg.index, msg.value, msg.reqId, msg.clientRequesting, msg.replicaRequested));
+        unstable.put(this.lastUpdate, 0);
 
         tell(new AckMsg(this.lastUpdate), getSender());
         crashIf(Crash.Type.Update);
@@ -252,12 +257,12 @@ public class Replica extends AbstractReplica {
     private void onAckMsg(AckMsg msg) {
         debug("received ACK " + msg.epochSeqNum + " from " + getSender().path().name());
 
-        LocationUpdate update = updatesHistory.get(msg.epochSeqNum);
-        update.increaseQuorum();
-        if (update.quorum < getSystemNumberOfActors() / 2 + 1 || update.isStable())
+        // null once the update is applied: later acks are ignored
+        Integer acks = unstable.computeIfPresent(msg.epochSeqNum, (k, n) -> n + 1);
+        if (acks == null || acks < getSystemNumberOfActors() / 2 + 1)
             return;
 
-        applyUpdate(msg.epochSeqNum, update);
+        applyUpdate(msg.epochSeqNum, updatesHistory.get(msg.epochSeqNum));
         broadcast(new WriteOKMsg(msg.epochSeqNum));
     }
 
@@ -269,15 +274,16 @@ public class Replica extends AbstractReplica {
         crashIf(Crash.Type.WriteOK);
     }
 
-    private void applyUpdate(EpochSeqNum key, LocationUpdate update) {
-        update.setStable();
+    private void applyUpdate(EpochSeqNum key, UpdateEntry update) {
+        unstable.remove(key);
         locations[update.index] = update.value;
         log("applied update " + key.epoch + ":" + key.seqNum + " (" + update.index + ", " + update.value + ")");
         callbackOnUpdateApplied(update.index, update.value);
 
         // only the replica contacted by the client replies to it
         if (getSelf().equals(update.replicaRequested))
-            tell(new AbstractClient.WriteResult(true, update.index, update.value, this.id), update.clientRequesting);
+            tell(new WriteReplyMsg(update.reqId,
+                    new AbstractClient.WriteResult(true, update.index, update.value, this.id)), update.clientRequesting);
     }
 
     // =================================================================================
@@ -364,11 +370,10 @@ public class Replica extends AbstractReplica {
         // TODO: cancel election timeout and ACK timeout
 
         // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
-        for (Map.Entry<EpochSeqNum, LocationUpdate> e : msg.missingUpdates.entrySet()) {
-            LocationUpdate existing = updatesHistory.get(e.getKey());
-            if (existing != null && existing.isStable())
+        for (Map.Entry<EpochSeqNum, UpdateEntry> e : msg.missingUpdates.entrySet()) {
+            if (updatesHistory.containsKey(e.getKey()) && !unstable.containsKey(e.getKey()))
                 continue; // already delivered
-            deliverUpdate(e.getKey(), new LocationUpdate(e.getValue()));
+            deliverUpdate(e.getKey(), e.getValue());
         }
 
         // 3. Adopt the new epoch and coordinator
@@ -385,10 +390,10 @@ public class Replica extends AbstractReplica {
         // Set stable all pending updates, Become Coordinator, Send a sync Msg to the replicas announcing new coordinator
         // and provide the other nodes with all the missing updates
 
-        TreeMap<EpochSeqNum, LocationUpdate> sorted = new TreeMap<>(updatesHistory);
+        TreeMap<EpochSeqNum, UpdateEntry> sorted = new TreeMap<>(updatesHistory);
         // 1. Finish the local pending updates if any
-        for (Map.Entry<EpochSeqNum, LocationUpdate> e : sorted.entrySet()) {
-            if (!e.getValue().isStable()) {
+        for (Map.Entry<EpochSeqNum, UpdateEntry> e : sorted.entrySet()) {
+            if (unstable.containsKey(e.getKey())) {
                 deliverUpdate(e.getKey(), e.getValue());
             }
         }
@@ -402,11 +407,7 @@ public class Replica extends AbstractReplica {
         for (ElectionUpdate eu : electionUpdateList) {
             if (eu.replicaID == this.id)
                 continue;
-            SortedMap<EpochSeqNum, LocationUpdate> missing = new TreeMap<>();
-            for (Map.Entry<EpochSeqNum, LocationUpdate> e : sorted.tailMap(eu.lastUpdate, true).entrySet()) {
-                missing.put(e.getKey(), new LocationUpdate(e.getValue()));
-            }
-            tell(new SyncMsg(newEpoch, this.id, missing), this.replicasGroup.get(eu.replicaID));
+            tell(new SyncMsg(newEpoch, this.id, sorted.tailMap(eu.lastUpdate, true)), this.replicasGroup.get(eu.replicaID));
         }
 
         // 4. Leave the election behavior
@@ -414,7 +415,7 @@ public class Replica extends AbstractReplica {
         // TODO: start sending HEARTBEATs
     }
 
-    private void deliverUpdate(EpochSeqNum id, LocationUpdate u) {
+    private void deliverUpdate(EpochSeqNum id, UpdateEntry u) {
         updatesHistory.put(id, u);
         applyUpdate(id, u);
     }

@@ -4,15 +4,15 @@ import akka.actor.ActorRef;
 import akka.actor.Props;
 import akka.actor.Cancellable;
 
+import java.io.Serializable;
 import java.util.*;
 
 import java.time.Duration;
 
 public class Client extends AbstractClient {
-
-    // Map with Index and Cancellable timeout object
-    private final Map<Integer, Cancellable> readTimeoutList = new HashMap<>();
-    private final Map<Integer, Cancellable> writeTimeoutList = new HashMap<>();
+    // Pending requests: request id -> timer. A request is pending until its reply or its timeout, whichever comes first.
+    private final Map<Integer, Cancellable> timeouts = new HashMap<>();
+    private int nextReqId = 0;
 
 
     Client(long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica, Optional<ActorRef> listener) {
@@ -28,84 +28,98 @@ public class Client extends AbstractClient {
         return Props.create(Client.class, () -> new Client(readTimeoutDelay, writeTimeoutDelay, defaultTargetReplica, Optional.ofNullable(listener)));
     }
 
-    /* Cancelling Read timeout */
-    private void cancelReadTimeout(int index) {
+    /* Self-scheduled: the read with this request id got no reply in time */
+    private static final class ReadTimer implements Serializable {
+        final int reqId;
+        final ReadTimeout timeout;
 
-        Cancellable timeout = readTimeoutList.remove(index);
-        if (timeout != null) {
-            timeout.cancel();
+        ReadTimer(int reqId, ReadTimeout timeout) {
+            this.reqId = reqId;
+            this.timeout = timeout;
         }
     }
-    /* Cancelling Write timeout */
-    private void cancelWriteTimeout(int index) {
 
-        Cancellable timeout = writeTimeoutList.remove(index);
-        if (timeout != null) {
-            timeout.cancel();
+    /* Self-scheduled: the write with this request id got no reply in time */
+    private static final class WriteTimer implements Serializable {
+        final int reqId;
+        final WriteTimeout timeout;
+
+        WriteTimer(int reqId, WriteTimeout timeout) {
+            this.reqId = reqId;
+            this.timeout = timeout;
         }
+    }
+
+    private void startTimer(int reqId, long delayMillis, Serializable timer) {
+        timeouts.put(reqId, getContext().getSystem().scheduler().scheduleOnce(
+                Duration.ofMillis(delayMillis),
+                getSelf(),
+                timer,
+                getContext().system().dispatcher(),
+                getSelf()));
     }
 
     @Override
     public void sendRead(ActorRef replica, int index) {
-        cancelReadTimeout(index);
+        int reqId = nextReqId++;
         log("requesting READ (" + index + ") to Replica " + replica.path().name());
-        replica.tell(new Messages.ReadReqMsg(index), getSelf());
-
-        Cancellable readTimeout = getContext().getSystem().scheduler().scheduleOnce(
-                Duration.ofMillis(getReadTimeoutDelay()),
-                getSelf(),
-                new ReadTimeout(getSelf(), replica, index),
-                getContext().system().dispatcher(),
-                getSelf()
+        replica.tell(new Messages.ReadReqMsg(reqId, index), getSelf());
+        startTimer(
+            reqId,
+            getReadTimeoutDelay(),
+            new ReadTimer(reqId, new ReadTimeout(getSelf(), replica, index))
         );
-        readTimeoutList.put(index, readTimeout);
     }
 
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
-        /* To be checked since the Write does not need to wait for a reply and
-        should the Write to the same index trigger the cancellation of the old timeout */
-        cancelWriteTimeout(index);
+        int reqId = nextReqId++;
         log("requesting WRITE (" + index + ", " + value + ") to Replica " + replica.path().name());
-        replica.tell(new Messages.WriteReqMsg(index, value), getSelf());
-
-        Cancellable writeTimeout = getContext().getSystem().scheduler().scheduleOnce(
-                Duration.ofMillis(getWriteTimeoutDelay()),
-                getSelf(),
-                new WriteTimeout(getSelf(), replica, index, value),
-                getContext().system().dispatcher(),
-                getSelf()
+        replica.tell(new Messages.WriteReqMsg(reqId, index, value), getSelf());
+        startTimer(
+            reqId,
+            getWriteTimeoutDelay(),
+            new WriteTimer(reqId, new WriteTimeout(getSelf(), replica, index, value))
         );
-        writeTimeoutList.put(index, writeTimeout);
+    }
+
+    /* Removes the request; false if it already completed or timed out (late reply, or a timer that fired before cancel) */
+    private boolean complete(int reqId) {
+        Cancellable timer = timeouts.remove(reqId);
+        if (timer == null)
+            return false;
+        timer.cancel();
+        return true;
     }
 
     /* Getting Results back from the Replica */
-    private void onReadResult(ReadResult msg) {
-        cancelReadTimeout(msg.index);
-        callbackOnReadResult(msg);
+    private void onReadReply(Messages.ReadReplyMsg msg) {
+        if (complete(msg.reqId))
+            callbackOnReadResult(msg.result);
     }
 
-    private void onWriteResult(WriteResult msg) {
-        cancelWriteTimeout(msg.index);
-        callbackOnWriteResult(msg);
+    private void onWriteReply(Messages.WriteReplyMsg msg) {
+        if (complete(msg.reqId))
+            callbackOnWriteResult(msg.result);
     }
 
-    private void onReadTimeout(ReadTimeout msg) {
-        callbackOnReadTimeout(new ReadTimeout(msg.client, msg.replica, msg.index));
+    private void onReadTimer(ReadTimer msg) {
+        if (complete(msg.reqId))
+            callbackOnReadTimeout(msg.timeout);
     }
-    private void onWriteTimeout(WriteTimeout msg) {
-        callbackOnWriteTimeout(new WriteTimeout(msg.client,msg.replica, msg.index, msg.value));
+
+    private void onWriteTimer(WriteTimer msg) {
+        if (complete(msg.reqId))
+            callbackOnWriteTimeout(msg.timeout);
     }
 
     @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
-                .match(ReadResult.class, this::onReadResult)
-                .match(WriteResult.class, this::onWriteResult)
-                .match(ReadTimeout.class, this::onReadTimeout)
-                .match(WriteTimeout.class, this::onWriteTimeout)
+                .match(Messages.ReadReplyMsg.class, this::onReadReply)
+                .match(Messages.WriteReplyMsg.class, this::onWriteReply)
+                .match(ReadTimer.class, this::onReadTimer)
+                .match(WriteTimer.class, this::onWriteTimer)
                 .build();
     }
-
-
 }

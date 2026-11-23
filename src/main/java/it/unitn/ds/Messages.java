@@ -24,21 +24,47 @@ public final class Messages {
 
     /* Read request from a client */
     public static final class ReadReqMsg implements Serializable {
+        public final int reqId;
         public final int index;
 
-        public ReadReqMsg(int index) {
+        public ReadReqMsg(int reqId, int index) {
+            this.reqId = reqId;
             this.index = index;
         }
     }
 
     /* Write request from a client */
     public static final class WriteReqMsg implements Serializable {
+        public final int reqId;
         public final int index;
         public final int value;
 
-        public WriteReqMsg(int index, int value) {
+        public WriteReqMsg(int reqId, int index, int value) {
+            this.reqId = reqId;
             this.index = index;
             this.value = value;
+        }
+    }
+
+    /* Reply to a read, tagged with the client's request id */
+    public static final class ReadReplyMsg implements Serializable {
+        public final int reqId;
+        public final AbstractClient.ReadResult result;
+
+        public ReadReplyMsg(int reqId, AbstractClient.ReadResult result) {
+            this.reqId = reqId;
+            this.result = result;
+        }
+    }
+
+    /* Reply to a write, tagged with the client's request id */
+    public static final class WriteReplyMsg implements Serializable {
+        public final int reqId;
+        public final AbstractClient.WriteResult result;
+
+        public WriteReplyMsg(int reqId, AbstractClient.WriteResult result) {
+            this.reqId = reqId;
+            this.result = result;
         }
     }
 
@@ -50,11 +76,13 @@ public final class Messages {
     public static final class UpdateRequestMsg implements Serializable {
         public final int index;
         public final int value;
-        public final ActorRef clientRequesting; // to know which client to send the WriteResult to
+        public final int reqId;
+        public final ActorRef clientRequesting;
 
-        public UpdateRequestMsg(int index, int value, ActorRef clientRequesting) {
+        public UpdateRequestMsg(int index, int value, int reqId, ActorRef clientRequesting) {
             this.index = index;
             this.value = value;
+            this.reqId = reqId;
             this.clientRequesting = clientRequesting;
         }
     }
@@ -64,14 +92,16 @@ public final class Messages {
         public final EpochSeqNum epochSeqNum;
         public final int index;
         public final int value;
+        public final int reqId; // client's request id
         public final ActorRef clientRequesting; // client that sent the write
         public final ActorRef replicaRequested; // replica that received the write and replies to the client
 
-        public UpdateMsg(EpochSeqNum epochSeqNum, int index, int value, ActorRef clientRequesting,
+        public UpdateMsg(EpochSeqNum epochSeqNum, int index, int value, int reqId, ActorRef clientRequesting,
                 ActorRef replicaRequested) {
             this.epochSeqNum = epochSeqNum;
             this.index = index;
             this.value = value;
+            this.reqId = reqId;
             this.clientRequesting = clientRequesting;
             this.replicaRequested = replicaRequested;
         }
@@ -133,9 +163,9 @@ public final class Messages {
     public static final class SyncMsg implements Serializable {
         public final int newEpoch;
         public final int newCoordinatorId;
-        public final SortedMap<EpochSeqNum, LocationUpdate> missingUpdates;
+        public final SortedMap<EpochSeqNum, UpdateEntry> missingUpdates;
 
-        public SyncMsg(int newEpoch, int newCoordinatorId, SortedMap<EpochSeqNum, LocationUpdate> missingUpdates) {
+        public SyncMsg(int newEpoch, int newCoordinatorId, SortedMap<EpochSeqNum, UpdateEntry> missingUpdates) {
             this.newEpoch = newEpoch;
             this.newCoordinatorId = newCoordinatorId;
             this.missingUpdates = Collections.unmodifiableSortedMap(new TreeMap<>(missingUpdates));
