@@ -127,6 +127,8 @@ public class Replica extends AbstractReplica {
                 .match(WriteOKMsg.class, this::onWriteOKMsg)
                 .match(HeartbeatMsg.class, this::onHeartbeatMsg)
                 .match(CoordinatorTimeout.class, this::onCoordinatorTimeout)
+                .match(UpdateTimeout.class, this::onUpdateTimeout)
+                .match(WriteOKTimeout.class, this::onWriteOKTimeout)
                 .match(ElectionMsg.class, this::onElectionMsg)
                 .build();
     }
@@ -221,6 +223,11 @@ public class Replica extends AbstractReplica {
             new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender()), 
             this.replicasGroup.get(coordinator_id)
         );
+        // the coordinator does not receive its own UpdateMsg, and cannot time out on itself
+        if (this.id != this.coordinator_id) {
+            UpdateTimeout timeout = new UpdateTimeout(getSender(), msg.reqId);
+            updateTimers.put(timeout, schedule(timeout, getRequestTimeout()));
+        }
     }
 
     // =================================================================================
@@ -244,12 +251,19 @@ public class Replica extends AbstractReplica {
     private void onUpdateMsg(UpdateMsg msg) {
         debug("received UPDATE " + msg.epochSeqNum + " from " + getSender().path().name());
 
+        if (getSelf().equals(msg.replicaRequested)) {
+            Cancellable forwarded = updateTimers.remove(new UpdateTimeout(msg.clientRequesting, msg.reqId));
+            if (forwarded != null)
+                forwarded.cancel();
+        }
+
         this.lastUpdate = msg.epochSeqNum;
         updatesHistory.put(this.lastUpdate,
                 new UpdateEntry(msg.index, msg.value, msg.reqId, msg.clientRequesting, msg.replicaRequested));
         unstable.put(this.lastUpdate, 0);
 
         tell(new AckMsg(this.lastUpdate), getSender());
+        writeOKTimers.put(this.lastUpdate, schedule(new WriteOKTimeout(this.lastUpdate), getRequestTimeout()));
         crashIf(Crash.Type.Update);
     }
 
@@ -269,6 +283,9 @@ public class Replica extends AbstractReplica {
     /* Replica: commit the update */
     private void onWriteOKMsg(WriteOKMsg msg) {
         debug("received WRITEOK " + msg.epochSeqNum + " from " + getSender().path().name());
+        Cancellable acked = writeOKTimers.remove(msg.epochSeqNum);
+        if (acked != null)
+            acked.cancel();
 
         applyUpdate(msg.epochSeqNum, updatesHistory.get(msg.epochSeqNum));
         crashIf(Crash.Type.WriteOK);
@@ -298,6 +315,49 @@ public class Replica extends AbstractReplica {
         startElection();
     }
 
+    /* Self-scheduled: the coordinator did not broadcast the UpdateMsg for a write this replica forwarded */
+    private record UpdateTimeout(ActorRef client, int reqId) implements Serializable {
+    }
+
+    /* Self-scheduled: the coordinator did not send the WriteOKMsg for an update this replica acked */
+    private record WriteOKTimeout(EpochSeqNum epochSeqNum) implements Serializable {
+    }
+
+    // Pending request timers; the timer message is the key for UPDATE, the update id for WRITEOK
+    private final Map<UpdateTimeout, Cancellable> updateTimers = new HashMap<>();
+    private final Map<EpochSeqNum, Cancellable> writeOKTimers = new HashMap<>();
+
+    /*
+     * Wait for UpdateMsg / WriteOKMsg: two hops (to the coordinator and back), each allowed twice the
+     * per-hop tolerance because it can queue behind a burst of writes on the same FIFO channel.
+     * Must stay below getHeartbeatTimeout(), or the heartbeat always detects the crash first.
+     */
+    private int getRequestTimeout() {
+        return 4 * getMaxLatencyPlusTolerance();
+    }
+
+    // remove() == null: the timer was cancelled after it had already fired
+    private void onUpdateTimeout(UpdateTimeout msg) {
+        if (updateTimers.remove(msg) == null)
+            return;
+        log("UPDATE timeout for request " + msg.reqId() + " of " + msg.client().path().name());
+        startElection();
+    }
+
+    private void onWriteOKTimeout(WriteOKTimeout msg) {
+        if (writeOKTimers.remove(msg.epochSeqNum()) == null)
+            return;
+        log("WRITEOK timeout for " + msg.epochSeqNum());
+        startElection();
+    }
+
+    private void cancelRequestTimers() {
+        updateTimers.values().forEach(Cancellable::cancel);
+        updateTimers.clear();
+        writeOKTimers.values().forEach(Cancellable::cancel);
+        writeOKTimers.clear();
+    }
+
     // =================================================================================
     // Coordinator election
     // =================================================================================
@@ -306,7 +366,9 @@ public class Replica extends AbstractReplica {
         // Starting the Election protocol the first time to timeout
         // case 1) if timeout is HEARTBEAT, UPDATE, WRITEOK
         this.getContext().become(electionBehavior()); // switch to the election behavior
-        this.heartbeatTimer.cancel();
+        if (this.heartbeatTimer != null) // null if an UPDATE/WRITEOK timeout fires before the first heartbeat
+            this.heartbeatTimer.cancel();
+        cancelRequestTimers();
 
         // create the Update List and add its id and its last update
         SortedSet<ElectionUpdate> updateList = new TreeSet<>();
@@ -325,8 +387,8 @@ public class Replica extends AbstractReplica {
         // when receiving the election msg from the replica that detected the crash of the coord
         // Sends an ACK back
         tell(new ACKElectionMsg(), getSender());
-        // TODO:
-        //  - Cancel all the timeouts
+        cancelRequestTimers();
+        // TODO: cancel the remaining timeouts
 
         // switch to the election behavior
         this.getContext().become(electionBehavior());
