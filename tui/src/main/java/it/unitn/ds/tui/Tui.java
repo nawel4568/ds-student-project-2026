@@ -4,10 +4,23 @@ import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.Props;
-import com.googlecode.lanterna.SGR;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.TextColor;
-import com.googlecode.lanterna.graphics.TextGraphics;
+import com.googlecode.lanterna.graphics.SimpleTheme;
+import com.googlecode.lanterna.gui2.BasicWindow;
+import com.googlecode.lanterna.gui2.BorderLayout;
+import com.googlecode.lanterna.gui2.Borders;
+import com.googlecode.lanterna.gui2.Direction;
+import com.googlecode.lanterna.gui2.Label;
+import com.googlecode.lanterna.gui2.LinearLayout;
+import com.googlecode.lanterna.gui2.MultiWindowTextGUI;
+import com.googlecode.lanterna.gui2.Panel;
+import com.googlecode.lanterna.gui2.TextBox;
+import com.googlecode.lanterna.gui2.TextGUIGraphics;
+import com.googlecode.lanterna.gui2.Window;
+import com.googlecode.lanterna.gui2.table.DefaultTableCellRenderer;
+import com.googlecode.lanterna.gui2.table.Table;
+import com.googlecode.lanterna.gui2.table.TableModel;
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.screen.Screen;
 import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
@@ -32,6 +45,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * Demo console for the replicated system. It only uses the public API (props, InitSystem, Crash,
@@ -44,8 +59,22 @@ public final class Tui {
     // Must outlast heartbeat detection + election, otherwise writes during an election time out.
     private static final long WRITE_TIMEOUT_MS = 10000;
     private static final int LOG_LINES_KEPT = 500;
-    private static final String HELP =
-            "r <client> <replica> <idx> | w <client> <replica> <idx> <val> | c <replica> [Now|Heartbeat|Update|WriteOK|Election] [n] | debug | q";
+
+    /** Command grammar: drives execution help, the argument hint and Tab completion. */
+    private static final Map<String, List<String>> USAGE = new LinkedHashMap<>();
+
+    static {
+        USAGE.put("read", List.of("<client>", "<replica>", "<idx>"));
+        USAGE.put("write", List.of("<client>", "<replica>", "<idx>", "<val>"));
+        USAGE.put("crash", List.of("<replica>", "[type]", "[n]"));
+        USAGE.put("debug", List.of());
+        USAGE.put("quit", List.of());
+    }
+
+    private static final Map<String, String> ALIASES = Map.of("r", "read", "w", "write", "c", "crash", "q", "quit");
+    private static final String HELP = USAGE.entrySet().stream()
+            .map(e -> String.join(" ", e.getKey(), String.join(" ", e.getValue())).trim())
+            .collect(Collectors.joining(" | "));
 
     record Event(ActorRef from, Object msg) {}
 
@@ -65,7 +94,7 @@ public final class Tui {
 
     static final class ReplicaView {
         boolean crashed, electing;
-        String armed; // pending deferred crash, as requested via the API
+        String armed = ""; // pending deferred crash, as requested via the API
         int coordinator;
         final Map<Integer, Integer> values = new TreeMap<>();
     }
@@ -85,9 +114,16 @@ public final class Tui {
     private final ClientView[] clientViews;
     private final Deque<String> log = new ArrayDeque<>();
     private final RandomAccessFile logFile;
-    private final StringBuilder input = new StringBuilder();
-    private String status = "";
     private boolean debug;
+
+    // Widgets
+    private final Table<String> replicaTable = new Table<>("");
+    private final Table<String> clientTable = new Table<>("");
+    private final Label logLabel = new Label("");
+    private final Label hintLabel = new Label("");
+    private final Label statusLabel = new Label("");
+    private final CommandBox commandBox = new CommandBox();
+    private final BasicWindow window = new BasicWindow();
 
     Tui(int nReplicas, int nClients, int coordinator) throws Exception {
         Path logPath = Files.createTempFile("ds-tui", ".log");
@@ -136,44 +172,208 @@ public final class Tui {
         Tui tui = new Tui(nReplicas, nClients, coordinator);
         try (Screen screen = new DefaultTerminalFactory().createScreen()) {
             screen.startScreen();
-            screen.setCursorPosition(null);
-            tui.loop(screen);
+            tui.run(new MultiWindowTextGUI(screen));
         } finally {
             tui.system.terminate();
         }
     }
 
-    private void loop(Screen screen) throws Exception {
-        while (true) {
+    // =================================================================================
+    // UI
+    // =================================================================================
+
+    private void run(MultiWindowTextGUI gui) throws Exception {
+        TextColor def = TextColor.ANSI.DEFAULT;
+        gui.setTheme(SimpleTheme.makeTheme(true, def, def, def, def, TextColor.ANSI.BLACK, TextColor.ANSI.CYAN, def));
+
+        replicaTable.setTableCellRenderer(new DefaultTableCellRenderer<>() {
+            @Override
+            protected void applyStyle(Table<String> t, String cell, int col, int row, boolean sel, TextGUIGraphics g) {
+                g.applyThemeStyle(t.getThemeDefinition().getNormal()); // no selection: the table is display-only
+                g.setForegroundColor(statusColor(t.getTableModel().getCell(1, row)));
+            }
+        });
+        clientTable.setTableCellRenderer(new DefaultTableCellRenderer<>() {
+            @Override
+            protected void applyStyle(Table<String> t, String cell, int col, int row, boolean sel, TextGUIGraphics g) {
+                g.applyThemeStyle(t.getThemeDefinition().getNormal());
+            }
+        });
+
+        Panel top = new Panel(new LinearLayout(Direction.VERTICAL));
+        top.addComponent(replicaTable.withBorder(Borders.singleLine("Replicas")));
+        top.addComponent(clientTable.withBorder(Borders.singleLine("Clients")));
+
+        Panel prompt = new Panel(new LinearLayout(Direction.HORIZONTAL));
+        prompt.addComponent(new Label(">"));
+        prompt.addComponent(
+                commandBox, LinearLayout.createLayoutData(LinearLayout.Alignment.Fill, LinearLayout.GrowPolicy.CanGrow));
+        Panel bottom = new Panel(new LinearLayout(Direction.VERTICAL));
+        bottom.addComponent(hintLabel.setForegroundColor(TextColor.ANSI.BLACK_BRIGHT));
+        bottom.addComponent(statusLabel.setForegroundColor(TextColor.ANSI.CYAN));
+        bottom.addComponent(prompt, LinearLayout.createLayoutData(LinearLayout.Alignment.Fill));
+
+        Panel root = new Panel(new BorderLayout());
+        root.addComponent(top, BorderLayout.Location.TOP);
+        root.addComponent(logLabel.withBorder(Borders.singleLine("Log")), BorderLayout.Location.CENTER);
+        root.addComponent(bottom, BorderLayout.Location.BOTTOM);
+
+        window.setHints(List.of(Window.Hint.FULL_SCREEN, Window.Hint.NO_DECORATIONS));
+        window.setComponent(root);
+        gui.addWindow(window);
+        window.setFocusedInteractable(commandBox);
+        commandBox.setTextChangeListener((text, byUser) -> hintLabel.setText(hint(text)));
+        hintLabel.setText(hint(""));
+
+        // Single thread: drain callbacks, then let Lanterna handle input, resizes and (delta) redraws.
+        while (!gui.getWindows().isEmpty()) {
             Event e;
             while ((e = events.poll()) != null) apply(e);
             tailLog();
-            KeyStroke k;
-            while ((k = screen.pollInput()) != null) {
-                switch (k.getKeyType()) {
-                    case Character -> input.append(k.getCharacter());
-                    case Backspace -> {
-                        if (!input.isEmpty()) input.setLength(input.length() - 1);
-                    }
-                    case Escape -> input.setLength(0);
-                    case Enter -> {
-                        String cmd = input.toString().trim();
-                        input.setLength(0);
-                        if (cmd.equals("q") || cmd.equals("quit")) return;
-                        status = execute(cmd);
-                    }
-                    case EOF -> {
-                        return;
-                    }
-                    default -> {}
-                }
-            }
-            screen.doResizeIfNecessary();
-            draw(screen);
-            screen.refresh();
-            Thread.sleep(50);
+            refreshWidgets();
+            if (!gui.getGUIThread().processEventsAndUpdate()) Thread.sleep(20);
         }
     }
+
+    private static TextColor statusColor(String status) {
+        if (status.startsWith("CRASHED")) return TextColor.ANSI.RED;
+        if (status.startsWith("ELECTING")) return TextColor.ANSI.MAGENTA;
+        if (status.startsWith("COORDINATOR")) return TextColor.ANSI.YELLOW;
+        return TextColor.ANSI.GREEN;
+    }
+
+    private void refreshWidgets() {
+        // Union of all indices any replica reported applying, one column each.
+        SortedSet<Integer> indices = new TreeSet<>();
+        for (ReplicaView v : replicaViews) indices.addAll(v.values.keySet());
+        List<String> header = new ArrayList<>(List.of("ID", "STATUS", "COORD", "SCHEDULED CRASH"));
+        indices.forEach(i -> header.add("[" + i + "]"));
+        List<List<String>> rows = new ArrayList<>();
+        for (int id = 0; id < replicaViews.length; id++) {
+            ReplicaView v = replicaViews[id];
+            String state = v.crashed ? "CRASHED" : v.electing ? "ELECTING" : v.coordinator == id ? "COORDINATOR" : "UP";
+            List<String> row = new ArrayList<>(List.of("R" + id, state, "R" + v.coordinator, v.armed));
+            indices.forEach(i -> row.add(Objects.toString(v.values.get(i), ".")));
+            rows.add(row);
+        }
+        setTable(replicaTable, header, rows);
+
+        rows = new ArrayList<>();
+        for (int id = 0; id < clientViews.length; id++)
+            rows.add(List.of("C" + id, String.valueOf(clientViews[id].pending), clientViews[id].last));
+        setTable(clientTable, List.of("ID", "PENDING", "LAST RESULT"), rows);
+
+        int height = logLabel.getSize().getRows();
+        List<String> lines = new ArrayList<>(log);
+        String text = String.join("\n", lines.subList(Math.max(0, lines.size() - height), lines.size()));
+        if (!text.equals(logLabel.getText())) logLabel.setText(text);
+    }
+
+    /** Swap the model only when the content changed, so idle frames redraw nothing. */
+    private static void setTable(Table<String> table, List<String> header, List<List<String>> rows) {
+        TableModel<String> old = table.getTableModel();
+        if (old.getColumnLabels().equals(header) && old.getRows().equals(rows)) return;
+        TableModel<String> model = new TableModel<>(header.toArray(String[]::new));
+        rows.forEach(model::addRow);
+        table.setTableModel(model);
+    }
+
+    /** Single-line prompt with Up/Down history and Tab completion driven by {@link #USAGE}. */
+    private final class CommandBox extends TextBox {
+        private final List<String> history = new ArrayList<>();
+        private int historyPos;
+
+        CommandBox() {
+            super(new TerminalSize(20, 1));
+        }
+
+        @Override
+        public synchronized Result handleKeyStroke(KeyStroke k) {
+            switch (k.getKeyType()) {
+                case Enter -> {
+                    String cmd = getText().trim();
+                    if (!cmd.isEmpty() && (history.isEmpty() || !history.getLast().equals(cmd))) history.add(cmd);
+                    historyPos = history.size();
+                    replace("");
+                    statusLabel.setText(execute(cmd));
+                }
+                case ArrowUp -> {
+                    if (historyPos > 0) replace(history.get(--historyPos));
+                }
+                case ArrowDown -> {
+                    historyPos = Math.min(historyPos + 1, history.size());
+                    replace(historyPos < history.size() ? history.get(historyPos) : "");
+                }
+                case Escape -> replace("");
+                case Tab -> complete();
+                default -> {
+                    return super.handleKeyStroke(k);
+                }
+            }
+            return Result.HANDLED;
+        }
+
+        private void replace(String text) {
+            setText(text);
+            setCaretPosition(text.length());
+        }
+
+        private void complete() {
+            String text = getText();
+            String head = text.substring(0, text.lastIndexOf(' ') + 1);
+            String word = text.substring(head.length());
+            List<String> matches = matches(head, word);
+            if (matches.size() == 1) replace(head + matches.getFirst() + " ");
+            else if (!matches.isEmpty()) replace(head + commonPrefix(matches));
+        }
+    }
+
+    /** Name of the argument being typed after {@code head} ("command" for the first word), or null. */
+    private static String argName(String head) {
+        String[] prev = head.isBlank() ? new String[0] : head.trim().split("\\s+");
+        if (prev.length == 0) return "command";
+        List<String> args = USAGE.get(ALIASES.getOrDefault(prev[0], prev[0]));
+        return args == null || prev.length > args.size() ? null : args.get(prev.length - 1);
+    }
+
+    private List<String> matches(String head, String word) {
+        String arg = argName(head);
+        List<String> all =
+                switch (arg == null ? "" : arg) {
+                    case "command" -> List.copyOf(USAGE.keySet());
+                    case "<client>" -> ids(clients.size());
+                    case "<replica>" -> ids(replicas.size());
+                    case "[type]" -> Arrays.stream(Crash.Type.values()).map(Enum::name).toList();
+                    default -> List.of();
+                };
+        return all.stream()
+                .filter(c -> c.toLowerCase().startsWith(word.toLowerCase()))
+                .toList();
+    }
+
+    private String hint(String text) {
+        String head = text.substring(0, text.lastIndexOf(' ') + 1);
+        String arg = argName(head);
+        if (arg == null) return "Enter to run";
+        List<String> m = matches(head, text.substring(head.length()));
+        String next = arg.equals("command") ? HELP : arg + (m.isEmpty() ? "" : ": " + String.join(" ", m));
+        return next + "   (Tab complete, Up/Down history, Esc clear)";
+    }
+
+    private static List<String> ids(int n) {
+        return IntStream.range(0, n).mapToObj(String::valueOf).toList();
+    }
+
+    private static String commonPrefix(List<String> words) {
+        String p = words.getFirst();
+        for (String w : words)
+            while (!w.toLowerCase().startsWith(p.toLowerCase())) p = p.substring(0, p.length() - 1);
+        return p;
+    }
+
+    // =================================================================================
+    // API callbacks and commands
+    // =================================================================================
 
     private void apply(Event e) {
         switch (e.msg()) {
@@ -206,23 +406,24 @@ public final class Tui {
     }
 
     private String execute(String cmd) {
+        if (cmd.isEmpty()) return "";
         String[] a = cmd.split("\\s+");
         try {
-            switch (a[0]) {
-                case "r", "read" -> {
+            switch (ALIASES.getOrDefault(a[0], a[0])) {
+                case "read" -> {
                     int c = idx(a[1], clients), r = idx(a[2], replicas), i = Integer.parseInt(a[3]);
                     clients.get(c).tell(new ReadRequest(i, replicas.get(r)), ActorRef.noSender());
                     clientViews[c].pending++;
                     return "C" + c + " -> READ [" + i + "] at R" + r;
                 }
-                case "w", "write" -> {
+                case "write" -> {
                     int c = idx(a[1], clients), r = idx(a[2], replicas);
                     int i = Integer.parseInt(a[3]), val = Integer.parseInt(a[4]);
                     clients.get(c).tell(new WriteRequest(i, val, replicas.get(r)), ActorRef.noSender());
                     clientViews[c].pending++;
                     return "C" + c + " -> WRITE [" + i + "] := " + val + " at R" + r;
                 }
-                case "c", "crash" -> {
+                case "crash" -> {
                     int r = idx(a[1], replicas);
                     Crash.Type type = a.length > 2 ? crashType(a[2]) : Crash.Type.Now;
                     int n = a.length > 3 ? Integer.parseInt(a[3]) : 1;
@@ -234,14 +435,17 @@ public final class Tui {
                     Logger.setDebugEnabled(debug);
                     return "debug logs " + (debug ? "on" : "off");
                 }
-                case "" -> {
+                case "quit" -> {
+                    window.close();
                     return "";
                 }
                 default -> {
                     return "unknown command: " + a[0];
                 }
             }
-        } catch (ArrayIndexOutOfBoundsException | IllegalArgumentException ex) {
+        } catch (ArrayIndexOutOfBoundsException ex) {
+            return "missing arguments: " + a[0] + " " + String.join(" ", USAGE.get(ALIASES.getOrDefault(a[0], a[0])));
+        } catch (IllegalArgumentException ex) {
             return "bad arguments (" + ex.getMessage() + ")";
         }
     }
@@ -265,82 +469,5 @@ public final class Tui {
             log.addLast(line.length() > 11 ? line.substring(11) : line); // drop the date, keep the time
             if (log.size() > LOG_LINES_KEPT) log.removeFirst();
         }
-    }
-
-    private void draw(Screen screen) {
-        screen.clear();
-        TextGraphics g = screen.newTextGraphics();
-        TerminalSize size = screen.getTerminalSize();
-        int row = 0;
-
-        g.enableModifiers(SGR.BOLD);
-        g.putString(0, row++, "DS demo: " + replicas.size() + " replicas, " + clients.size() + " clients");
-        g.disableModifiers(SGR.BOLD);
-        row++;
-
-        // Union of all indices any replica reported applying, one column each.
-        SortedSet<Integer> indices = new TreeSet<>();
-        for (ReplicaView v : replicaViews) indices.addAll(v.values.keySet());
-        StringBuilder header = new StringBuilder(String.format("%-4s %-26s %-6s ", "ID", "STATUS", "COORD"));
-        for (int i : indices) header.append(String.format("%6s", "[" + i + "]"));
-        g.enableModifiers(SGR.UNDERLINE);
-        g.putString(0, row++, header.toString());
-        g.disableModifiers(SGR.UNDERLINE);
-        for (int id = 0; id < replicaViews.length; id++) {
-            ReplicaView v = replicaViews[id];
-            String state;
-            TextColor color;
-            if (v.crashed) {
-                state = "CRASHED";
-                color = TextColor.ANSI.RED;
-            } else if (v.electing) {
-                state = "ELECTING";
-                color = TextColor.ANSI.MAGENTA;
-            } else if (v.coordinator == id) {
-                state = "UP (coordinator)";
-                color = TextColor.ANSI.YELLOW;
-            } else {
-                state = "UP";
-                color = TextColor.ANSI.GREEN;
-            }
-            if (!v.crashed && v.armed != null) state += ", armed: " + v.armed;
-            StringBuilder line = new StringBuilder(String.format("%-4s %-26s %-6s ", "R" + id, state, "R" + v.coordinator));
-            for (int i : indices) {
-                Integer val = v.values.get(i);
-                line.append(String.format("%6s", val == null ? "." : val));
-            }
-            g.setForegroundColor(color);
-            g.putString(0, row++, line.toString());
-            g.setForegroundColor(TextColor.ANSI.DEFAULT);
-        }
-        row++;
-
-        g.enableModifiers(SGR.UNDERLINE);
-        g.putString(0, row++, String.format("%-4s %-8s %s", "ID", "PENDING", "LAST RESULT"));
-        g.disableModifiers(SGR.UNDERLINE);
-        for (int id = 0; id < clientViews.length; id++)
-            g.putString(0, row++, String.format("%-4s %-8d %s", "C" + id, clientViews[id].pending, clientViews[id].last));
-        row++;
-
-        int bottom = size.getRows() - 4;
-        g.enableModifiers(SGR.UNDERLINE);
-        g.putString(0, row++, "LOG" + (debug ? " (debug)" : ""));
-        g.disableModifiers(SGR.UNDERLINE);
-        int logRows = Math.max(0, bottom - row);
-        List<String> tail = new ArrayList<>(log).subList(Math.max(0, log.size() - logRows), log.size());
-        for (String l : tail) {
-            if (l.contains("CRASH")) g.setForegroundColor(TextColor.ANSI.RED);
-            else if (l.contains("ELECT") || l.contains("COORDINATOR")) g.setForegroundColor(TextColor.ANSI.MAGENTA);
-            g.putString(0, row++, l);
-            g.setForegroundColor(TextColor.ANSI.DEFAULT);
-        }
-
-        g.setForegroundColor(TextColor.ANSI.CYAN);
-        g.putString(0, size.getRows() - 3, HELP);
-        g.putString(0, size.getRows() - 2, status);
-        g.setForegroundColor(TextColor.ANSI.DEFAULT);
-        g.enableModifiers(SGR.BOLD);
-        g.putString(0, size.getRows() - 1, "> " + input + "_");
-        g.disableModifiers(SGR.BOLD);
     }
 }
