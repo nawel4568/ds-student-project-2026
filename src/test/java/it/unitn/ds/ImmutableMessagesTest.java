@@ -5,9 +5,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.Serializable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -55,8 +59,23 @@ class ImmutableMessagesTest {
                 if (!Modifier.isFinal(f.getModifiers()))
                     violations.add(fieldPath + ": field is not final");
                 if (!Modifier.isStatic(f.getModifiers()))
-                    check(f.getType(), fieldPath, visited, violations);
+                    checkGeneric(f.getGenericType(), fieldPath, visited, violations);
             }
+        }
+    }
+
+    // shortcut: a java.util collection/map field passes if its element types are immutable; reflection cannot
+    // tell whether the instance is an unmodifiable copy (List.copyOf, Collections.unmodifiable*), so the
+    // constructor must make one. Upgrade to a runtime check on built messages if that ever slips.
+    private static void checkGeneric(Type type, String path, Set<Class<?>> visited, List<String> violations) {
+        if (type instanceof ParameterizedType p && p.getRawType() instanceof Class<?> raw
+                && (Collection.class.isAssignableFrom(raw) || Map.class.isAssignableFrom(raw))) {
+            for (Type arg : p.getActualTypeArguments())
+                checkGeneric(arg, path + "<" + ((Class<?>) raw).getSimpleName() + " element>", visited, violations);
+        } else if (type instanceof Class<?> c) {
+            check(c, path, visited, violations);
+        } else {
+            violations.add(path + ": type " + type.getTypeName() + " is not known to be immutable");
         }
     }
 }
