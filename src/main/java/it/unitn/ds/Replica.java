@@ -20,7 +20,7 @@ public class Replica extends AbstractReplica {
     private int successor;
 
     private EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
-    private final LinkedHashMap<EpochSeqNum, UpdateEntry> updatesHistory;
+    private final TreeMap<EpochSeqNum, UpdateEntry> updatesHistory = new TreeMap<>(); // sorted by <e,i>
     // Updates not applied yet -> acks received (only the coordinator counts them)
     private final Map<EpochSeqNum, Integer> unstable = new HashMap<>();
 
@@ -80,9 +80,6 @@ public class Replica extends AbstractReplica {
         this.replicasGroup = new HashMap<>();
         this.coordinator_id = this.id;
         this.lastUpdate = new EpochSeqNum(0, 0);
-
-        this.updatesHistory = new LinkedHashMap<EpochSeqNum, UpdateEntry>();
-        this.updatesHistory.put(lastUpdate, new UpdateEntry(0, 0, 0, ActorRef.noSender(), ActorRef.noSender()));
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -529,13 +526,8 @@ public class Replica extends AbstractReplica {
         // coordinator
         // and provide the other nodes with all the missing updates
 
-        TreeMap<EpochSeqNum, UpdateEntry> sorted = new TreeMap<>(updatesHistory);
-        // 1. Finish the local pending updates if any
-        for (Map.Entry<EpochSeqNum, UpdateEntry> e : sorted.entrySet()) {
-            if (unstable.containsKey(e.getKey())) {
-                deliverUpdate(e.getKey(), e.getValue());
-            }
-        }
+        // 1. Finish the local pending updates if any, in <e,i> order
+        new TreeSet<>(unstable.keySet()).forEach(k -> deliverUpdate(k, updatesHistory.get(k)));
 
         // 2. Set a new epoch = epoch of the last update + 1 & the sequence number restarts at 0
         int newEpoch = this.lastUpdate.epoch + 1;
@@ -546,7 +538,7 @@ public class Replica extends AbstractReplica {
         for (Map.Entry<Integer, EpochSeqNum> eu : electionUpdateList.entrySet()) {
             if (eu.getKey() == this.id) continue; // skip self
             tell(
-                    new SyncMsg(newEpoch, this.id, sorted.tailMap(eu.getValue(), true)),
+                    new SyncMsg(newEpoch, this.id, updatesHistory.tailMap(eu.getValue(), true)),
                     this.replicasGroup.get(eu.getKey()));
         }
 
