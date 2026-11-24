@@ -455,33 +455,31 @@ public class Replica extends AbstractReplica {
     }
 
     private void startElection() {
+        enterElection();
+        sendFreshToken();
+        crashIf(Crash.Type.Election);
+    }
+
+    private void enterElection() {
         callbackOnElectionStarted(this.coordinator_id);
-        // Starting the Election protocol the first time to timeout
         setBehavior(ReplicaMode.ELECTION);
         setElectionTimer();
         cancelTimers();
+    }
 
-        ElectionMsg newElectionMsg =
-                new ElectionMsg(new TreeMap<>(Map.of(this.id, this.lastUpdate)), this.id, this.lastUpdate.epoch);
-
-        // send the message (id, updateList) to the successor
-        tell(newElectionMsg, this.replicasGroup.get(this.successor));
+    /* Start a new token holding only this replica's last update, and send it to the successor */
+    private void sendFreshToken() {
+        tell(
+                new ElectionMsg(new TreeMap<>(Map.of(this.id, this.lastUpdate)), this.id, this.lastUpdate.epoch),
+                this.replicasGroup.get(this.successor));
         setElectionAckTimer(this.successor);
-        crashIf(Crash.Type.Election);
     }
 
     private void onElectionMsg(ElectionMsg msg) {
         tell(new ACKElectionMsg(), getSender());
         if (msg.epoch < this.lastUpdate.epoch) return;
 
-        if (this.mode != ReplicaMode.ELECTION) {
-            callbackOnElectionStarted(this.coordinator_id);
-            setBehavior(ReplicaMode.ELECTION);
-            setElectionTimer();
-            // when receiving the election msg from the replica that detected the crash of the coord
-            // Sends an ACK back
-            cancelTimers();
-        }
+        if (this.mode != ReplicaMode.ELECTION) enterElection();
 
         if (msg.visitedReplicas.containsKey(this.id)) {
             if (msg.candidateID == this.id) {
@@ -522,13 +520,7 @@ public class Replica extends AbstractReplica {
         if (msg.replicaId() == this.successor) {
             this.successor = (this.successor + 1) % this.replicasGroup.size();
         }
-
-        ElectionMsg newElectionMsg =
-                new ElectionMsg(new TreeMap<>(Map.of(this.id, this.lastUpdate)), this.id, this.lastUpdate.epoch);
-
-        // send the message (id, updateList) to the successor
-        tell(newElectionMsg, this.replicasGroup.get(this.successor));
-        setElectionAckTimer(this.successor);
+        sendFreshToken();
     }
 
     private void becomeCoordinator(SortedMap<Integer, EpochSeqNum> electionUpdateList) {
