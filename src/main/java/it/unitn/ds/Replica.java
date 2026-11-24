@@ -10,20 +10,56 @@ import java.time.Duration;
 import java.util.*;
 
 public class Replica extends AbstractReplica {
+
+    // =================================================================================
+    // State
+    // =================================================================================
+
     private final int[] locations = new int[AbstractReplica.POSITIONS_LIST_LENGTH]; // the stable values
     private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
     private ActorRef successor;
 
     private EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
-    private LinkedHashMap<EpochSeqNum, UpdateEntry> updatesHistory;
+    private final LinkedHashMap<EpochSeqNum, UpdateEntry> updatesHistory;
     // Updates not applied yet -> acks received (only the coordinator counts them)
     private final Map<EpochSeqNum, Integer> unstable = new HashMap<>();
+
+    // coordinator: periodic HeartbeatTick to self
+    // replica: fires if the coordinator stays silent
+    private Cancellable heartbeatTimer;
+    // Pending request timers; the timer message is the key for UPDATE, the update id for WRITEOK
+    private final Map<UpdateTimeout, Cancellable> updateTimers = new HashMap<>();
+    private final Map<EpochSeqNum, Cancellable> writeOKTimers = new HashMap<>();
 
     private final CrashTrigger crashTrigger = new CrashTrigger();
 
     // Election Variables
     private final SortedSet<ElectionUpdate> electionUpdateList = new TreeSet<>();
+
+    // =================================================================================
+    // Self-scheduled messages
+    // =================================================================================
+
+    /* Time for the coordinator to send a heartbeat */
+    private static final class HeartbeatTick implements Serializable {
+    }
+
+    /* No heartbeat from the coordinator within the timeout */
+    private static final class CoordinatorTimeout implements Serializable {
+    }
+
+    /* The coordinator did not broadcast the UpdateMsg for a write this replica forwarded */
+    private record UpdateTimeout(ActorRef client, int reqId) implements Serializable {
+    }
+
+    /* The coordinator did not send the WriteOKMsg for an update this replica acked */
+    private record WriteOKTimeout(EpochSeqNum epochSeqNum) implements Serializable {
+    }
+
+    // =================================================================================
+    // Construction
+    // =================================================================================
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
@@ -50,52 +86,6 @@ public class Replica extends AbstractReplica {
     }
 
     // =================================================================================
-    // Heartbeat
-    // =================================================================================
-
-    // coordinator: periodic HeartbeatTick to self
-    // replica: fires if the coordinator stays silent
-    private Cancellable heartbeatTimer;
-
-    private void startHeartbeatTimer() {
-        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled())
-            this.heartbeatTimer.cancel();
-
-        this.heartbeatTimer = getContext().system().getScheduler().scheduleWithFixedDelay(
-                Duration.ZERO,
-                Duration.ofMillis(getCoordinatorBeatInterval()),
-                getSelf(),
-                new HeartbeatTick(),
-                getContext().system().dispatcher(),
-                ActorRef.noSender());
-    }
-
-    public int getHeartbeatTimeout() {
-        return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
-    }
-
-    /* Self-scheduled: time for the coordinator to send a heartbeat */
-    private static final class HeartbeatTick implements Serializable {
-    }
-
-    private void onHeartbeatTick(HeartbeatTick msg) {
-        broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
-        crashIf(Crash.Type.Heartbeat);
-    }
-
-    private void onHeartbeatMsg(HeartbeatMsg msg) {
-        if (msg.epoch < this.lastUpdate.epoch)
-            return;
-
-        // null before first heartbeat arrives.
-        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled()) {
-            this.heartbeatTimer.cancel();
-        }
-        this.heartbeatTimer = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
-        crashIf(Crash.Type.Heartbeat);
-    }
-
-    // =================================================================================
     // System API
     // =================================================================================
 
@@ -116,6 +106,24 @@ public class Replica extends AbstractReplica {
             startHeartbeatTimer();
         }
     }
+
+    @Override
+    public void crash(AbstractReplica.Crash how_to_crash) {
+        // TODO: missing to be handled:
+        // - Election
+        switch (how_to_crash.type) {
+            case Crash.Type.Now:
+                clearReceive(); // AbstractReplica logs CRASHED right after this
+                break;
+
+            default:
+                crashTrigger.arm(how_to_crash);
+        }
+    }
+
+    // =================================================================================
+    // Behaviors
+    // =================================================================================
 
     /* Default: normal replica behavior. */
     @Override
@@ -157,7 +165,7 @@ public class Replica extends AbstractReplica {
     }
 
     // =================================================================================
-    // Network and timers
+    // Network, timers and crash emulation
     // =================================================================================
 
     void broadcast(Serializable msg) {
@@ -175,22 +183,24 @@ public class Replica extends AbstractReplica {
                 ActorRef.noSender());
     }
 
-    // =================================================================================
-    // Crash emulation
-    // =================================================================================
+    public int getHeartbeatTimeout() {
+        return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
+    }
 
-    @Override
-    public void crash(AbstractReplica.Crash how_to_crash) {
-        // TODO: missing to be handled:
-        // - Election
-        switch (how_to_crash.type) {
-            case Crash.Type.Now:
-                clearReceive(); // AbstractReplica logs CRASHED right after this
-                break;
+    /*
+     * Wait for UpdateMsg / WriteOKMsg: two hops (to the coordinator and back), each allowed twice the
+     * per-hop tolerance because it can queue behind a burst of writes on the same FIFO channel.
+     * Must stay below getHeartbeatTimeout(), or the heartbeat always detects the crash first.
+     */
+    private int getRequestTimeout() {
+        return 4 * getMaxLatencyPlusTolerance();
+    }
 
-            default:
-                crashTrigger.arm(how_to_crash);
-        }
+    private void cancelRequestTimers() {
+        updateTimers.values().forEach(Cancellable::cancel);
+        updateTimers.clear();
+        writeOKTimers.values().forEach(Cancellable::cancel);
+        writeOKTimers.clear();
     }
 
     private void clearReceive() {
@@ -303,37 +313,54 @@ public class Replica extends AbstractReplica {
                     new AbstractClient.WriteResult(true, update.index, update.value, this.id)), update.clientRequesting);
     }
 
+    private void deliverUpdate(EpochSeqNum id, UpdateEntry u) {
+        updatesHistory.put(id, u);
+        applyUpdate(id, u);
+    }
+
+    // =================================================================================
+    // Heartbeat
+    // =================================================================================
+
+    /* Coordinator: start ticking */
+    private void startHeartbeatTimer() {
+        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled())
+            this.heartbeatTimer.cancel();
+
+        this.heartbeatTimer = getContext().system().getScheduler().scheduleWithFixedDelay(
+                Duration.ZERO,
+                Duration.ofMillis(getCoordinatorBeatInterval()),
+                getSelf(),
+                new HeartbeatTick(),
+                getContext().system().dispatcher(),
+                ActorRef.noSender());
+    }
+
+    /* Coordinator */
+    private void onHeartbeatTick(HeartbeatTick msg) {
+        broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
+        crashIf(Crash.Type.Heartbeat);
+    }
+
+    /* Replica: restart the coordinator timeout */
+    private void onHeartbeatMsg(HeartbeatMsg msg) {
+        if (msg.epoch < this.lastUpdate.epoch)
+            return;
+
+        // null before first heartbeat arrives.
+        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled()) {
+            this.heartbeatTimer.cancel();
+        }
+        this.heartbeatTimer = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
+        crashIf(Crash.Type.Heartbeat);
+    }
+
     // =================================================================================
     // Failure detection
     // =================================================================================
 
-    /* Self-scheduled: no heartbeat from the coordinator within the timeout */
-    private static final class CoordinatorTimeout implements Serializable {
-    }
-
     private void onCoordinatorTimeout(CoordinatorTimeout msg) {
         startElection();
-    }
-
-    /* Self-scheduled: the coordinator did not broadcast the UpdateMsg for a write this replica forwarded */
-    private record UpdateTimeout(ActorRef client, int reqId) implements Serializable {
-    }
-
-    /* Self-scheduled: the coordinator did not send the WriteOKMsg for an update this replica acked */
-    private record WriteOKTimeout(EpochSeqNum epochSeqNum) implements Serializable {
-    }
-
-    // Pending request timers; the timer message is the key for UPDATE, the update id for WRITEOK
-    private final Map<UpdateTimeout, Cancellable> updateTimers = new HashMap<>();
-    private final Map<EpochSeqNum, Cancellable> writeOKTimers = new HashMap<>();
-
-    /*
-     * Wait for UpdateMsg / WriteOKMsg: two hops (to the coordinator and back), each allowed twice the
-     * per-hop tolerance because it can queue behind a burst of writes on the same FIFO channel.
-     * Must stay below getHeartbeatTimeout(), or the heartbeat always detects the crash first.
-     */
-    private int getRequestTimeout() {
-        return 4 * getMaxLatencyPlusTolerance();
     }
 
     // remove() == null: the timer was cancelled after it had already fired
@@ -349,13 +376,6 @@ public class Replica extends AbstractReplica {
             return;
         log("WRITEOK timeout for " + msg.epochSeqNum());
         startElection();
-    }
-
-    private void cancelRequestTimers() {
-        updateTimers.values().forEach(Cancellable::cancel);
-        updateTimers.clear();
-        writeOKTimers.values().forEach(Cancellable::cancel);
-        writeOKTimers.clear();
     }
 
     // =================================================================================
@@ -424,30 +444,6 @@ public class Replica extends AbstractReplica {
         // cancel the ACK timeout
     }
 
-    private void onSyncMsg(SyncMsg msg) {
-        // 1. Ignore stale or duplicate synchronizations
-        if (msg.newEpoch <= this.lastUpdate.epoch)
-            return;
-
-        // TODO: cancel election timeout and ACK timeout
-
-        // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
-        for (Map.Entry<EpochSeqNum, UpdateEntry> e : msg.missingUpdates.entrySet()) {
-            if (updatesHistory.containsKey(e.getKey()) && !unstable.containsKey(e.getKey()))
-                continue; // already delivered
-            deliverUpdate(e.getKey(), e.getValue());
-        }
-
-        // 3. Adopt the new epoch and coordinator
-        this.coordinator_id = msg.newCoordinatorId;
-        this.lastUpdate = new EpochSeqNum(msg.newEpoch, 0);
-
-        // 4. Back to normal behavior
-        getContext().become(createReceive());
-
-        // TODO: reset the heartbeat timeout for the new coordinator
-    }
-
     private void becomeCoordinator(SortedSet<ElectionUpdate> electionUpdateList) {
         // Set stable all pending updates, Become Coordinator, Send a sync Msg to the replicas announcing new coordinator
         // and provide the other nodes with all the missing updates
@@ -477,8 +473,27 @@ public class Replica extends AbstractReplica {
         // TODO: start sending HEARTBEATs
     }
 
-    private void deliverUpdate(EpochSeqNum id, UpdateEntry u) {
-        updatesHistory.put(id, u);
-        applyUpdate(id, u);
+    private void onSyncMsg(SyncMsg msg) {
+        // 1. Ignore stale or duplicate synchronizations
+        if (msg.newEpoch <= this.lastUpdate.epoch)
+            return;
+
+        // TODO: cancel election timeout and ACK timeout
+
+        // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
+        for (Map.Entry<EpochSeqNum, UpdateEntry> e : msg.missingUpdates.entrySet()) {
+            if (updatesHistory.containsKey(e.getKey()) && !unstable.containsKey(e.getKey()))
+                continue; // already delivered
+            deliverUpdate(e.getKey(), e.getValue());
+        }
+
+        // 3. Adopt the new epoch and coordinator
+        this.coordinator_id = msg.newCoordinatorId;
+        this.lastUpdate = new EpochSeqNum(msg.newEpoch, 0);
+
+        // 4. Back to normal behavior
+        getContext().become(createReceive());
+
+        // TODO: reset the heartbeat timeout for the new coordinator
     }
 }
