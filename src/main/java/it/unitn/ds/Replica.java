@@ -497,14 +497,9 @@ public class Replica extends AbstractReplica {
         } else {
             TreeMap<Integer, EpochSeqNum> visitedReplicas = new TreeMap<>(msg.visitedReplicas);
             visitedReplicas.put(this.id, this.lastUpdate);
-            Integer newCandidateID;
-            if (this.lastUpdate.compareTo(msg.getCandidateEpochSeq()) == 0) {
-                newCandidateID = Math.min(this.id, msg.candidateID);
-            } else if (this.lastUpdate.compareTo(msg.getCandidateEpochSeq()) > 0) {
-                newCandidateID = this.id;
-            } else { // if (this.lastUpdate.compareTo(msg.getCandidateEpochSeq()) < 0)
-                newCandidateID = msg.candidateID;
-            }
+            // the most recent update wins; ties go to the lower id
+            int c = this.lastUpdate.compareTo(msg.getCandidateEpochSeq());
+            int newCandidateID = (c > 0 || (c == 0 && this.id < msg.candidateID)) ? this.id : msg.candidateID;
 
             tell(new ElectionMsg(visitedReplicas, newCandidateID, msg.epoch), this.replicasGroup.get(this.successor));
             setElectionAckTimer(this.successor);
