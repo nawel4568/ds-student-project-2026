@@ -67,7 +67,8 @@ public class Client extends AbstractClient {
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
         int reqId = nextReqId++;
-        log("requesting WRITE (" + index + ", " + value + ") to " + replica.path().name());
+        log("requesting WRITE (" + index + ", " + value + ") to "
+                + replica.path().name());
         replica.tell(new Messages.WriteReqMsg(reqId, index, value), getSelf());
         startTimer(
                 reqId,
