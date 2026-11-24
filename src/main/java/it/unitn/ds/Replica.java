@@ -178,6 +178,7 @@ public class Replica extends AbstractReplica {
                 .match(ACKElectionMsg.class, this::onACKElectionMsg)
                 .match(ACKElectionTimeout.class, this::onACKElectionTimeout)
                 .match(ElectionTimeout.class, this::onElectionTimeout)
+                .match(WriteReqMsg.class, this::bufferWriteMsg)
                 .build();
     }
 
@@ -253,6 +254,15 @@ public class Replica extends AbstractReplica {
     // Client requests
     // =================================================================================
 
+    private void forwardWrite(UpdateRequestMsg req) {
+        tell(req, replicasGroup.get(coordinator_id));
+        if (this.id == this.coordinator_id) return; // the coordinator can't time out on itself
+
+        UpdateTimeout key = new UpdateTimeout(req.clientRequesting, req.reqId);
+        pendingWrites.put(key, req);
+        updateTimers.put(key, schedule(key, getRequestTimeout()));
+    }
+
     private void onReadReqMsg(ReadReqMsg msg) {
         debug("received READ (" + msg.index + ") from " + getSender().path().name());
         tell(
@@ -264,14 +274,7 @@ public class Replica extends AbstractReplica {
 
     private void onWriteReqMsg(WriteReqMsg msg) {
         debug("received WRITE (" + msg.index + ", " + msg.value + ") from " + getSender().path().name());
-        tell(
-                new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender()),
-                this.replicasGroup.get(coordinator_id));
-        // the coordinator does not receive its own UpdateMsg, and cannot time out on itself
-        if (this.id != this.coordinator_id) {
-            UpdateTimeout timeout = new UpdateTimeout(getSender(), msg.reqId);
-            updateTimers.put(timeout, schedule(timeout, getRequestTimeout()));
-        }
+        forwardWrite(new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender()));
     }
 
     // =================================================================================
@@ -297,6 +300,7 @@ public class Replica extends AbstractReplica {
 
         if (getSelf().equals(msg.replicaRequested)) {
             Cancellable forwarded = updateTimers.remove(new UpdateTimeout(msg.clientRequesting, msg.reqId));
+            pendingWrites.remove(new UpdateTimeout(msg.clientRequesting, msg.reqId));
             if (forwarded != null) forwarded.cancel();
         }
 
@@ -350,6 +354,9 @@ public class Replica extends AbstractReplica {
     private void deliverUpdate(EpochSeqNum id, UpdateEntry u) {
         updatesHistory.put(id, u);
         applyUpdate(id, u);
+        if (getSelf().equals(u.replicaRequested)) {
+            pendingWrites.remove(new UpdateTimeout(u.clientRequesting, u.reqId));
+        }
     }
 
     // =================================================================================
@@ -413,6 +420,9 @@ public class Replica extends AbstractReplica {
     // =================================================================================
     // Coordinator election
     // =================================================================================
+
+    // forwarded (or received mid-election) writes whose UpdateMsg hasn't arrived yet
+    private final Map<UpdateTimeout, UpdateRequestMsg> pendingWrites = new LinkedHashMap<>();
 
     private Cancellable electionAckTimer;
     private Cancellable electionTimer;
@@ -547,6 +557,9 @@ public class Replica extends AbstractReplica {
 
         setBehavior(ReplicaMode.COORDINATOR);
         startHeartbeatTimer();
+
+        pendingWrites.values().forEach(r -> tell(r, getSelf()));
+        pendingWrites.clear();
     }
 
     private void onSyncMsg(SyncMsg msg) {
@@ -567,9 +580,16 @@ public class Replica extends AbstractReplica {
         // 3. Adopt the new epoch and coordinator
         this.coordinator_id = msg.newCoordinatorId;
         this.lastUpdate = new EpochSeqNum(msg.newEpoch, 0);
+        new ArrayList<>(pendingWrites.values()).forEach(this::forwardWrite);
 
         // 4. Back to normal behavior
         setBehavior(ReplicaMode.NORMAL);
         this.heartbeatTimer = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
+    }
+
+    private void bufferWriteMsg(WriteReqMsg msg) {
+        this.pendingWrites.put(
+                new UpdateTimeout(getSender(), msg.reqId),
+                new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender()));
     }
 }
