@@ -201,9 +201,13 @@ public class Replica extends AbstractReplica {
     // Network, timers and crash emulation
     // =================================================================================
 
-    void broadcast(Serializable msg) {
-        for (ActorRef replica : this.replicasGroup.values())
-            if (!replica.equals(getSelf())) tell(msg, replica);
+    void broadcast(Serializable msg, Crash.Type crashType) {
+        for (ActorRef replica : this.replicasGroup.values()) {
+            if (replica.equals(getSelf())) continue;
+            tell(msg, replica);
+
+            if (crashIf(crashType)) return; // stop mid-broadcast
+        }
     }
 
     private Cancellable schedule(Serializable msg, long delayMillis) {
@@ -243,11 +247,11 @@ public class Replica extends AbstractReplica {
     }
 
     /* Call after processing a message of type t */
-    private void crashIf(Crash.Type t) {
-        if (crashTrigger.tick(t)) {
-            clearReceive();
-            log("CRASHED");
-        }
+    private boolean crashIf(Crash.Type t) {
+        if (!crashTrigger.tick(t)) return false;
+        clearReceive();
+        log("CRASHED");
+        return true;
     }
 
     // =================================================================================
@@ -290,8 +294,9 @@ public class Replica extends AbstractReplica {
         updatesHistory.put(this.lastUpdate, update);
         unstable.put(this.lastUpdate, 1); // the coordinator is part of the quorum
 
-        broadcast(new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.reqId, msg.clientRequesting, getSender()));
-        crashIf(Crash.Type.Update);
+        broadcast(
+                new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.reqId, msg.clientRequesting, getSender()),
+                Crash.Type.Update);
     }
 
     /* Replica: store the pending update and ack it */
@@ -324,7 +329,7 @@ public class Replica extends AbstractReplica {
         if (acks == null || acks < getSystemNumberOfActors() / 2 + 1) return;
 
         applyUpdate(msg.epochSeqNum, updatesHistory.get(msg.epochSeqNum));
-        broadcast(new WriteOKMsg(msg.epochSeqNum));
+        broadcast(new WriteOKMsg(msg.epochSeqNum), Crash.Type.WriteOK);
     }
 
     /* Replica: commit the update */
@@ -380,8 +385,7 @@ public class Replica extends AbstractReplica {
 
     /* Coordinator */
     private void onHeartbeatTick(HeartbeatTick msg) {
-        broadcast(new HeartbeatMsg(this.lastUpdate.epoch));
-        crashIf(Crash.Type.Heartbeat);
+        broadcast(new HeartbeatMsg(this.lastUpdate.epoch), Crash.Type.Heartbeat);
     }
 
     /* Replica: restart the coordinator timeout */
