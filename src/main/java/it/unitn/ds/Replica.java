@@ -27,8 +27,9 @@ public class Replica extends AbstractReplica {
     // coordinator: periodic HeartbeatTick to self
     // replica: fires if the coordinator stays silent
     private Cancellable heartbeatTimer;
-    // Pending request timers; the timer message is the key for UPDATE, the update id for WRITEOK
-    private final Map<UpdateTimeout, Cancellable> updateTimers = new HashMap<>();
+    // Forwarded (or buffered mid-election) writes whose UpdateMsg hasn't arrived yet, with their UPDATE timer
+    private final Map<WriteId, PendingWrite> pendingWrites = new LinkedHashMap<>();
+    // WRITEOK timers, keyed by the update id
     private final Map<EpochSeqNum, Cancellable> writeOKTimers = new HashMap<>();
 
     private final CrashTrigger crashTrigger = new CrashTrigger();
@@ -51,8 +52,11 @@ public class Replica extends AbstractReplica {
     /* No heartbeat from the coordinator within the timeout */
     private static final class CoordinatorTimeout implements Serializable {}
 
-    /* The coordinator did not broadcast the UpdateMsg for a write this replica forwarded */
-    private record UpdateTimeout(ActorRef client, int reqId) implements Serializable {}
+    /* A client write. Also the self-message sent when the coordinator did not broadcast its UpdateMsg in time */
+    private record WriteId(ActorRef client, int reqId) implements Serializable {}
+
+    /* timer is null while the write is buffered during an election */
+    private record PendingWrite(UpdateRequestMsg req, Cancellable timer) {}
 
     /* The coordinator did not send the WriteOKMsg for an update this replica acked */
     private record WriteOKTimeout(EpochSeqNum epochSeqNum) implements Serializable {}
@@ -146,7 +150,7 @@ public class Replica extends AbstractReplica {
                 .match(WriteOKMsg.class, this::onWriteOKMsg)
                 .match(HeartbeatMsg.class, this::onHeartbeatMsg)
                 .match(CoordinatorTimeout.class, this::onCoordinatorTimeout)
-                .match(UpdateTimeout.class, this::onUpdateTimeout)
+                .match(WriteId.class, this::onUpdateTimeout)
                 .match(WriteOKTimeout.class, this::onWriteOKTimeout)
                 .match(ElectionMsg.class, this::onElectionMsg)
                 .build();
@@ -236,8 +240,7 @@ public class Replica extends AbstractReplica {
 
     private void cancelTimers() {
         cancel(heartbeatTimer);
-        updateTimers.values().forEach(Cancellable::cancel);
-        updateTimers.clear();
+        pendingWrites.values().forEach(p -> cancel(p.timer())); // keep the writes: re-forwarded after the election
         writeOKTimers.values().forEach(Cancellable::cancel);
         writeOKTimers.clear();
     }
@@ -262,9 +265,8 @@ public class Replica extends AbstractReplica {
         tell(req, replicasGroup.get(coordinator_id));
         if (this.id == this.coordinator_id) return; // the coordinator can't time out on itself
 
-        UpdateTimeout key = new UpdateTimeout(req.clientRequesting, req.reqId);
-        pendingWrites.put(key, req);
-        updateTimers.put(key, schedule(key, getRequestTimeout()));
+        WriteId key = new WriteId(req.clientRequesting, req.reqId);
+        pendingWrites.put(key, new PendingWrite(req, schedule(key, getRequestTimeout())));
     }
 
     private void onReadReqMsg(ReadReqMsg msg) {
@@ -316,9 +318,7 @@ public class Replica extends AbstractReplica {
         debug("received UPDATE " + msg.epochSeqNum + " from "
                 + getSender().path().name());
 
-        UpdateTimeout key = new UpdateTimeout(msg.update.clientRequesting, msg.update.reqId);
-        pendingWrites.remove(key);
-        cancel(updateTimers.remove(key));
+        dropPendingWrite(msg.update);
 
         this.lastUpdate = msg.epochSeqNum;
         updatesHistory.put(this.lastUpdate, msg.update);
@@ -368,7 +368,13 @@ public class Replica extends AbstractReplica {
     private void deliverUpdate(EpochSeqNum id, UpdateEntry u) {
         updatesHistory.put(id, u);
         applyUpdate(id, u);
-        pendingWrites.remove(new UpdateTimeout(u.clientRequesting, u.reqId));
+        dropPendingWrite(u);
+    }
+
+    /* The write has an UpdateMsg now: stop waiting for it */
+    private void dropPendingWrite(UpdateEntry u) {
+        PendingWrite p = pendingWrites.remove(new WriteId(u.clientRequesting, u.reqId));
+        if (p != null) cancel(p.timer());
     }
 
     // =================================================================================
@@ -413,9 +419,9 @@ public class Replica extends AbstractReplica {
         startElection();
     }
 
-    // remove() == null: the timer was cancelled after it had already fired
-    private void onUpdateTimeout(UpdateTimeout msg) {
-        if (updateTimers.remove(msg) == null) return;
+    // not pending: the UpdateMsg arrived after the timer had already fired
+    private void onUpdateTimeout(WriteId msg) {
+        if (!pendingWrites.containsKey(msg)) return;
         log("UPDATE timeout for request " + msg.reqId() + " of "
                 + msg.client().path().name());
         startElection();
@@ -430,9 +436,6 @@ public class Replica extends AbstractReplica {
     // =================================================================================
     // Coordinator election
     // =================================================================================
-
-    // forwarded (or received mid-election) writes whose UpdateMsg hasn't arrived yet
-    private final Map<UpdateTimeout, UpdateRequestMsg> pendingWrites = new LinkedHashMap<>();
 
     private Cancellable electionAckTimer;
     private Cancellable electionTimer;
@@ -541,7 +544,7 @@ public class Replica extends AbstractReplica {
         setBehavior(ReplicaMode.COORDINATOR);
         startHeartbeatTimer();
 
-        pendingWrites.values().forEach(r -> tell(r, getSelf()));
+        pendingWrites.values().forEach(p -> tell(p.req(), getSelf()));
         pendingWrites.clear();
     }
 
@@ -564,7 +567,7 @@ public class Replica extends AbstractReplica {
         // 3. Adopt the new epoch and coordinator
         this.coordinator_id = msg.newCoordinatorId;
         this.lastUpdate = new EpochSeqNum(msg.newEpoch, 0);
-        new ArrayList<>(pendingWrites.values()).forEach(this::forwardWrite);
+        new ArrayList<>(pendingWrites.values()).forEach(p -> forwardWrite(p.req()));
 
         // 4. Back to normal behavior
         setBehavior(ReplicaMode.NORMAL);
@@ -572,8 +575,7 @@ public class Replica extends AbstractReplica {
     }
 
     private void bufferWriteMsg(WriteReqMsg msg) {
-        this.pendingWrites.put(
-                new UpdateTimeout(getSender(), msg.reqId),
-                new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender()));
+        UpdateRequestMsg req = new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender());
+        this.pendingWrites.put(new WriteId(getSender(), msg.reqId), new PendingWrite(req, null));
     }
 }
