@@ -86,25 +86,11 @@ public final class Messages {
     /* Update broadcast by the coordinator */
     public static final class UpdateMsg implements Serializable {
         public final EpochSeqNum epochSeqNum;
-        public final int index;
-        public final int value;
-        public final int reqId; // client's request id
-        public final ActorRef clientRequesting; // client that sent the write
-        public final ActorRef replicaRequested; // replica that received the write and replies to the client
+        public final UpdateEntry update;
 
-        public UpdateMsg(
-                EpochSeqNum epochSeqNum,
-                int index,
-                int value,
-                int reqId,
-                ActorRef clientRequesting,
-                ActorRef replicaRequested) {
+        public UpdateMsg(EpochSeqNum epochSeqNum, UpdateEntry update) {
             this.epochSeqNum = epochSeqNum;
-            this.index = index;
-            this.value = value;
-            this.reqId = reqId;
-            this.clientRequesting = clientRequesting;
-            this.replicaRequested = replicaRequested;
+            this.update = update;
         }
     }
 

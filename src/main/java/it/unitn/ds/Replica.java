@@ -308,9 +308,7 @@ public class Replica extends AbstractReplica {
         updatesHistory.put(this.lastUpdate, update);
         unstable.put(this.lastUpdate, 1); // the coordinator is part of the quorum
 
-        broadcast(
-                new UpdateMsg(this.lastUpdate, msg.index, msg.value, msg.reqId, msg.clientRequesting, getSender()),
-                Crash.Type.Update);
+        broadcast(new UpdateMsg(this.lastUpdate, update), Crash.Type.Update);
     }
 
     /* Replica: store the pending update and ack it */
@@ -318,14 +316,12 @@ public class Replica extends AbstractReplica {
         debug("received UPDATE " + msg.epochSeqNum + " from "
                 + getSender().path().name());
 
-        UpdateTimeout key = new UpdateTimeout(msg.clientRequesting, msg.reqId);
+        UpdateTimeout key = new UpdateTimeout(msg.update.clientRequesting, msg.update.reqId);
         pendingWrites.remove(key);
         cancel(updateTimers.remove(key));
 
         this.lastUpdate = msg.epochSeqNum;
-        updatesHistory.put(
-                this.lastUpdate,
-                new UpdateEntry(msg.index, msg.value, msg.reqId, msg.clientRequesting, msg.replicaRequested));
+        updatesHistory.put(this.lastUpdate, msg.update);
         unstable.put(this.lastUpdate, 0);
 
         tell(new AckMsg(this.lastUpdate), getSender());
