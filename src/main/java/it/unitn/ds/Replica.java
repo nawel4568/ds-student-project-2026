@@ -268,6 +268,12 @@ public class Replica extends AbstractReplica {
 
     private void onReadReqMsg(ReadReqMsg msg) {
         debug("received READ (" + msg.index + ") from " + getSender().path().name());
+
+        if (msg.index < 0 || msg.index >= POSITIONS_LIST_LENGTH) {
+            tell(new ReadReplyMsg(msg.reqId, new AbstractClient.ReadResult(false, msg.index, 0, this.id)), getSender());
+            return;
+        }
+
         tell(
                 new ReadReplyMsg(
                         msg.reqId, new AbstractClient.ReadResult(true, msg.index, this.locations[msg.index], this.id)),
@@ -277,6 +283,14 @@ public class Replica extends AbstractReplica {
     private void onWriteReqMsg(WriteReqMsg msg) {
         debug("received WRITE (" + msg.index + ", " + msg.value + ") from "
                 + getSender().path().name());
+
+        if (msg.index < 0 || msg.index >= POSITIONS_LIST_LENGTH) {
+            tell(
+                    new WriteReplyMsg(msg.reqId, new AbstractClient.WriteResult(false, msg.index, msg.value, this.id)),
+                    getSender());
+            return;
+        }
+
         forwardWrite(new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender()));
     }
 
