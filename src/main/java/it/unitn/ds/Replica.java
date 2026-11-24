@@ -220,6 +220,10 @@ public class Replica extends AbstractReplica {
                         ActorRef.noSender());
     }
 
+    private static void cancel(Cancellable timer) {
+        if (timer != null) timer.cancel();
+    }
+
     public int getHeartbeatTimeout() {
         return getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
     }
@@ -234,7 +238,7 @@ public class Replica extends AbstractReplica {
     }
 
     private void cancelTimers() {
-        if (heartbeatTimer != null) heartbeatTimer.cancel();
+        cancel(heartbeatTimer);
         updateTimers.values().forEach(Cancellable::cancel);
         updateTimers.clear();
         writeOKTimers.values().forEach(Cancellable::cancel);
@@ -319,8 +323,7 @@ public class Replica extends AbstractReplica {
 
         UpdateTimeout key = new UpdateTimeout(msg.clientRequesting, msg.reqId);
         pendingWrites.remove(key);
-        Cancellable forwarded = updateTimers.remove(key);
-        if (forwarded != null) forwarded.cancel();
+        cancel(updateTimers.remove(key));
 
         this.lastUpdate = msg.epochSeqNum;
         updatesHistory.put(
@@ -349,8 +352,7 @@ public class Replica extends AbstractReplica {
     private void onWriteOKMsg(WriteOKMsg msg) {
         debug("received WRITEOK " + msg.epochSeqNum + " from "
                 + getSender().path().name());
-        Cancellable acked = writeOKTimers.remove(msg.epochSeqNum);
-        if (acked != null) acked.cancel();
+        cancel(writeOKTimers.remove(msg.epochSeqNum));
 
         applyUpdate(msg.epochSeqNum, updatesHistory.get(msg.epochSeqNum));
         crashIf(Crash.Type.WriteOK);
@@ -382,7 +384,7 @@ public class Replica extends AbstractReplica {
 
     /* Coordinator: start ticking */
     private void startHeartbeatTimer() {
-        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled()) this.heartbeatTimer.cancel();
+        cancel(this.heartbeatTimer);
 
         this.heartbeatTimer = getContext()
                 .system()
@@ -405,10 +407,7 @@ public class Replica extends AbstractReplica {
     private void onHeartbeatMsg(HeartbeatMsg msg) {
         if (msg.epoch < this.lastUpdate.epoch) return;
 
-        // null before first heartbeat arrives.
-        if (this.heartbeatTimer != null && !this.heartbeatTimer.isCancelled()) {
-            this.heartbeatTimer.cancel();
-        }
+        cancel(this.heartbeatTimer);
         this.heartbeatTimer = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
         crashIf(Crash.Type.Heartbeat);
     }
@@ -446,21 +445,13 @@ public class Replica extends AbstractReplica {
     private Cancellable electionTimer;
 
     private void setElectionAckTimer(Integer replicaId) {
-        if (this.electionAckTimer != null && !this.electionAckTimer.isCancelled()) this.electionAckTimer.cancel();
+        cancel(this.electionAckTimer);
         this.electionAckTimer = schedule(new ACKElectionTimeout(replicaId), getRequestTimeout());
     }
 
-    private void cancelElectionAckTimer() {
-        if (this.electionAckTimer != null && !this.electionAckTimer.isCancelled()) this.electionAckTimer.cancel();
-    }
-
     private void setElectionTimer() {
-        if (this.electionTimer != null && !this.electionTimer.isCancelled()) this.electionTimer.cancel();
+        cancel(this.electionTimer);
         this.electionTimer = schedule(new ElectionTimeout(), this.replicasGroup.size() * getRequestTimeout());
-    }
-
-    private void cancelElectionTimer() {
-        if (this.electionTimer != null && !this.electionTimer.isCancelled()) this.electionTimer.cancel();
     }
 
     private void startElection() {
@@ -526,7 +517,7 @@ public class Replica extends AbstractReplica {
     }
 
     private void onACKElectionMsg(ACKElectionMsg msg) {
-        cancelElectionAckTimer();
+        cancel(this.electionAckTimer);
     }
 
     private void onElectionTimeout(ElectionTimeout msg) {
@@ -587,8 +578,8 @@ public class Replica extends AbstractReplica {
 
         callbackOnCoordinatorElected(msg.newCoordinatorId);
 
-        cancelElectionAckTimer();
-        cancelElectionTimer();
+        cancel(this.electionAckTimer);
+        cancel(this.electionTimer);
 
         // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
         for (Map.Entry<EpochSeqNum, UpdateEntry> e : msg.missingUpdates.entrySet()) {
