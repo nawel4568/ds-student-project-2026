@@ -34,6 +34,14 @@ public class Replica extends AbstractReplica {
 
     private final CrashTrigger crashTrigger = new CrashTrigger();
 
+    private enum ReplicaMode {
+        NORMAL,
+        COORDINATOR,
+        ELECTION
+    };
+
+    private ReplicaMode mode = ReplicaMode.NORMAL;
+
     // =================================================================================
     // Self-scheduled messages
     // =================================================================================
@@ -109,7 +117,7 @@ public class Replica extends AbstractReplica {
         this.successor = this.replicasGroup.get((this.id + 1) % this.replicasGroup.size());
 
         if (this.id == this.coordinator_id) {
-            getContext().become(coordinatorBehavior());
+            setBehavior(ReplicaMode.COORDINATOR);
             startHeartbeatTimer();
         }
     }
@@ -166,6 +174,21 @@ public class Replica extends AbstractReplica {
                 .match(SyncMsg.class, this::onSyncMsg)
                 .match(ACKElectionMsg.class, this::onACKElectionMsg)
                 .build();
+    }
+
+    public final void setBehavior(ReplicaMode newMode) {
+        this.mode = newMode;
+        switch (newMode) {
+            case NORMAL:
+                getContext().become(createReceive());
+                break;
+            case COORDINATOR:
+                getContext().become(coordinatorBehavior());
+                break;
+            case ELECTION:
+                getContext().become(electionBehavior());
+                break;
+        }
     }
 
     // =================================================================================
@@ -390,7 +413,7 @@ public class Replica extends AbstractReplica {
         callbackOnElectionStarted(this.coordinator_id);
         // Starting the Election protocol the first time to timeout
         // case 1) if timeout is HEARTBEAT, UPDATE, WRITEOK
-        this.getContext().become(electionBehavior());
+        setBehavior(ReplicaMode.ELECTION);
         cancelTimers();
 
         ElectionMsg newElectionMsg =
@@ -405,16 +428,17 @@ public class Replica extends AbstractReplica {
     }
 
     private void onElectionMsg(ElectionMsg msg) {
+        tell(new ACKElectionMsg(), getSender());
         if (msg.epoch < this.lastUpdate.epoch) return;
 
-        callbackOnElectionStarted(this.coordinator_id);
-        // when receiving the election msg from the replica that detected the crash of the coord
-        // Sends an ACK back
-        tell(new ACKElectionMsg(), getSender());
+        if (this.mode != ReplicaMode.ELECTION) {
+            callbackOnElectionStarted(this.coordinator_id);
+            setBehavior(ReplicaMode.ELECTION);
+            // when receiving the election msg from the replica that detected the crash of the coord
+            // Sends an ACK back
+            cancelTimers();
+        }
         cancelTimers();
-
-        // switch to the election behavior
-        this.getContext().become(electionBehavior());
 
         // add its id and its last update to the Update List
         ElectionMsg electionMsg = new ElectionMsg(msg);
@@ -474,14 +498,15 @@ public class Replica extends AbstractReplica {
                     this.replicasGroup.get(eu.getKey()));
         }
 
-        getContext().become(coordinatorBehavior());
+        setBehavior(ReplicaMode.COORDINATOR);
         startHeartbeatTimer();
     }
 
     private void onSyncMsg(SyncMsg msg) {
-        callbackOnCoordinatorElected(msg.newCoordinatorId);
         // 1. Ignore stale or duplicate synchronizations
         if (msg.newEpoch <= this.lastUpdate.epoch) return;
+
+        callbackOnCoordinatorElected(msg.newCoordinatorId);
 
         // TODO: cancel election timeout and ACK timeout
 
@@ -496,6 +521,6 @@ public class Replica extends AbstractReplica {
         this.lastUpdate = new EpochSeqNum(msg.newEpoch, 0);
 
         // 4. Back to normal behavior
-        getContext().become(createReceive());
+        setBehavior(ReplicaMode.NORMAL);
     }
 }
