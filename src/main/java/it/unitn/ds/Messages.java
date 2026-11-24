@@ -146,19 +146,13 @@ public final class Messages {
     /* Election token circulating on the ring, with each participant's last update */
     public static final class ElectionMsg implements Serializable {
         public final SortedMap<Integer, EpochSeqNum> visitedReplicas;
-        public final Integer candidateID;
-        public final Integer epoch;
+        public final int candidateID;
+        public final int epoch;
 
-        public ElectionMsg(SortedMap<Integer, EpochSeqNum> visitedReplicas, Integer candidateID, Integer epoch) {
+        public ElectionMsg(SortedMap<Integer, EpochSeqNum> visitedReplicas, int candidateID, int epoch) {
             this.visitedReplicas = Collections.unmodifiableSortedMap(new TreeMap<>(visitedReplicas));
             this.candidateID = candidateID;
             this.epoch = epoch;
-        }
-
-        public ElectionMsg(ElectionMsg other) {
-            this.visitedReplicas = other.visitedReplicas;
-            this.candidateID = other.candidateID;
-            this.epoch = other.epoch;
         }
 
         public EpochSeqNum getCandidateEpochSeq() {

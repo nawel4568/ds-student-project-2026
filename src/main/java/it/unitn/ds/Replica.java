@@ -17,7 +17,7 @@ public class Replica extends AbstractReplica {
     private final int[] locations = new int[AbstractReplica.POSITIONS_LIST_LENGTH]; // the stable values
     private final Map<Integer, ActorRef> replicasGroup;
     private int coordinator_id;
-    private Integer successor;
+    private int successor;
 
     private EpochSeqNum lastUpdate; // the epoch and seqNum of the last Update Req
     private final LinkedHashMap<EpochSeqNum, UpdateEntry> updatesHistory;
@@ -58,7 +58,7 @@ public class Replica extends AbstractReplica {
     private record WriteOKTimeout(EpochSeqNum epochSeqNum) implements Serializable {}
 
     /* The coordinator did not receive an ACK for the ElectionMsg it sent */
-    private record ACKElectionTimeout(Integer replicaId) implements Serializable {}
+    private record ACKElectionTimeout(int replicaId) implements Serializable {}
 
     private static final class ElectionTimeout implements Serializable {}
 
@@ -444,7 +444,7 @@ public class Replica extends AbstractReplica {
     private Cancellable electionAckTimer;
     private Cancellable electionTimer;
 
-    private void setElectionAckTimer(Integer replicaId) {
+    private void setElectionAckTimer(int replicaId) {
         cancel(this.electionAckTimer);
         this.electionAckTimer = schedule(new ACKElectionTimeout(replicaId), getRequestTimeout());
     }
@@ -483,12 +483,10 @@ public class Replica extends AbstractReplica {
             cancelTimers();
         }
 
-        // add its id and its last update to the Update List
-        ElectionMsg electionMsg = new ElectionMsg(msg);
-        if (electionMsg.visitedReplicas.containsKey(this.id)) {
-            if (electionMsg.candidateID == this.id) {
+        if (msg.visitedReplicas.containsKey(this.id)) {
+            if (msg.candidateID == this.id) {
                 // This is the new coordinator: new epoch, finish pending update, send SYNCHRONIZATION
-                this.becomeCoordinator(electionMsg.visitedReplicas);
+                this.becomeCoordinator(msg.visitedReplicas);
             } else {
                 // forward ELECTION to the candidate replica
                 tell(msg, this.replicasGroup.get(msg.candidateID));
@@ -521,7 +519,7 @@ public class Replica extends AbstractReplica {
 
     private void onACKElectionTimeout(ACKElectionTimeout msg) {
         log("ELECTIONACK timeout");
-        if (msg.replicaId.equals(this.successor)) {
+        if (msg.replicaId() == this.successor) {
             this.successor = (this.successor + 1) % this.replicasGroup.size();
         }
 
