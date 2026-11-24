@@ -202,7 +202,7 @@ public class Replica extends AbstractReplica {
     }
 
     private void cancelTimers() {
-        heartbeatTimer.cancel();
+        if (heartbeatTimer != null) heartbeatTimer.cancel();
         updateTimers.values().forEach(Cancellable::cancel);
         updateTimers.clear();
         writeOKTimers.values().forEach(Cancellable::cancel);
@@ -393,7 +393,8 @@ public class Replica extends AbstractReplica {
         this.getContext().become(electionBehavior());
         cancelTimers();
 
-        ElectionMsg newElectionMsg = new ElectionMsg(new TreeMap<>(Map.of(this.id, this.lastUpdate)), this.id);
+        ElectionMsg newElectionMsg =
+                new ElectionMsg(new TreeMap<>(Map.of(this.id, this.lastUpdate)), this.id, this.lastUpdate.epoch);
 
         // send the message (id, updateList) to the successor
         tell(newElectionMsg, this.successor);
@@ -404,6 +405,9 @@ public class Replica extends AbstractReplica {
     }
 
     private void onElectionMsg(ElectionMsg msg) {
+        if (msg.epoch < this.lastUpdate.epoch) return;
+
+        callbackOnElectionStarted(this.coordinator_id);
         // when receiving the election msg from the replica that detected the crash of the coord
         // Sends an ACK back
         tell(new ACKElectionMsg(), getSender());
@@ -415,23 +419,27 @@ public class Replica extends AbstractReplica {
         // add its id and its last update to the Update List
         ElectionMsg electionMsg = new ElectionMsg(msg);
         if (electionMsg.visitedReplicas.containsKey(this.id)) {
-            if (electionMsg.coordinatorCandidateID == this.id) {
+            if (electionMsg.candidateID == this.id) {
                 // This is the new coordinator: new epoch, finish pending update, send SYNCHRONIZATION
                 this.becomeCoordinator(electionMsg.visitedReplicas);
             } else {
                 // forward ELECTION to the candidate replica
-                tell(msg, this.replicasGroup.get(msg.coordinatorCandidateID));
+                tell(msg, this.replicasGroup.get(msg.candidateID));
                 // TODO: set ACK timeout
             }
         } else {
             TreeMap<Integer, EpochSeqNum> visitedReplicas = new TreeMap<>(msg.visitedReplicas);
             visitedReplicas.put(this.id, this.lastUpdate);
-            Integer newCoordinatorCandidateID = msg.coordinatorCandidateID;
-            if (this.lastUpdate.compareTo(msg.visitedReplicas.get(msg.coordinatorCandidateID)) >= 0) {
-                newCoordinatorCandidateID = Math.min(this.id, msg.coordinatorCandidateID);
+            Integer newCandidateID;
+            if (this.lastUpdate.compareTo(msg.getCandidateEpochSeq()) == 0) {
+                newCandidateID = Math.min(this.id, msg.candidateID);
+            } else if (this.lastUpdate.compareTo(msg.getCandidateEpochSeq()) > 0) {
+                newCandidateID = this.id;
+            } else { // if (this.lastUpdate.compareTo(msg.getCandidateEpochSeq()) < 0)
+                newCandidateID = msg.candidateID;
             }
 
-            tell(new ElectionMsg(visitedReplicas, newCoordinatorCandidateID), this.successor);
+            tell(new ElectionMsg(visitedReplicas, newCandidateID, msg.epoch), this.successor);
             // TODO: set ACK timeout
         }
     }
@@ -471,6 +479,7 @@ public class Replica extends AbstractReplica {
     }
 
     private void onSyncMsg(SyncMsg msg) {
+        callbackOnCoordinatorElected(msg.newCoordinatorId);
         // 1. Ignore stale or duplicate synchronizations
         if (msg.newEpoch <= this.lastUpdate.epoch) return;
 

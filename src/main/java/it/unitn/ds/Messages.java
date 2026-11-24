@@ -13,8 +13,7 @@ import akka.actor.ActorRef;
  */
 public final class Messages {
 
-    private Messages() {
-    }
+    private Messages() {}
 
     // =================================================================================
     // Client API
@@ -94,7 +93,12 @@ public final class Messages {
         public final ActorRef clientRequesting; // client that sent the write
         public final ActorRef replicaRequested; // replica that received the write and replies to the client
 
-        public UpdateMsg(EpochSeqNum epochSeqNum, int index, int value, int reqId, ActorRef clientRequesting,
+        public UpdateMsg(
+                EpochSeqNum epochSeqNum,
+                int index,
+                int value,
+                int reqId,
+                ActorRef clientRequesting,
                 ActorRef replicaRequested) {
             this.epochSeqNum = epochSeqNum;
             this.index = index;
@@ -143,22 +147,28 @@ public final class Messages {
     /* Election token circulating on the ring, with each participant's last update */
     public static final class ElectionMsg implements Serializable {
         public final SortedMap<Integer, EpochSeqNum> visitedReplicas;
-        public final Integer coordinatorCandidateID;
+        public final Integer candidateID;
+        public final Integer epoch;
 
-        public ElectionMsg(SortedMap<Integer, EpochSeqNum> visitedReplicas, Integer coordinatorCandidateID) {
+        public ElectionMsg(SortedMap<Integer, EpochSeqNum> visitedReplicas, Integer candidateID, Integer epoch) {
             this.visitedReplicas = Collections.unmodifiableSortedMap(new TreeMap<>(visitedReplicas));
-            this.coordinatorCandidateID = coordinatorCandidateID;
+            this.candidateID = candidateID;
+            this.epoch = epoch;
         }
 
         public ElectionMsg(ElectionMsg other) {
             this.visitedReplicas = other.visitedReplicas;
-            this.coordinatorCandidateID = other.coordinatorCandidateID;
+            this.candidateID = other.candidateID;
+            this.epoch = other.epoch;
+        }
+
+        public EpochSeqNum getCandidateEpochSeq() {
+            return visitedReplicas.get(candidateID);
         }
     }
 
     /* Ack of an ElectionMsg, to the previous replica in the ring */
-    public static final class ACKElectionMsg implements Serializable {
-    }
+    public static final class ACKElectionMsg implements Serializable {}
 
     /* New coordinator announcement, with the updates the receiver is missing */
     public static final class SyncMsg implements Serializable {
