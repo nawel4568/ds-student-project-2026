@@ -37,26 +37,10 @@ public class Client extends AbstractClient {
     }
 
     /* Self-scheduled: the read with this request id got no reply in time */
-    private static final class ReadTimer implements Serializable {
-        final int reqId;
-        final ReadTimeout timeout;
-
-        ReadTimer(int reqId, ReadTimeout timeout) {
-            this.reqId = reqId;
-            this.timeout = timeout;
-        }
-    }
+    private record ReadTimer(int reqId, ReadTimeout timeout) implements Serializable {}
 
     /* Self-scheduled: the write with this request id got no reply in time */
-    private static final class WriteTimer implements Serializable {
-        final int reqId;
-        final WriteTimeout timeout;
-
-        WriteTimer(int reqId, WriteTimeout timeout) {
-            this.reqId = reqId;
-            this.timeout = timeout;
-        }
-    }
+    private record WriteTimer(int reqId, WriteTimeout timeout) implements Serializable {}
 
     private void startTimer(int reqId, long delayMillis, Serializable timer) {
         timeouts.put(

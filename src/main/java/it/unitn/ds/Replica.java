@@ -354,7 +354,7 @@ public class Replica extends AbstractReplica {
     private void applyUpdate(EpochSeqNum key, UpdateEntry update) {
         unstable.remove(key);
         locations[update.index] = update.value;
-        log("applied update " + key.epoch + ":" + key.seqNum + " (" + update.index + ", " + update.value + ")");
+        log("applied update " + key.epoch() + ":" + key.seqNum() + " (" + update.index + ", " + update.value + ")");
         callbackOnUpdateApplied(update.index, update.value);
 
         // only the replica contacted by the client replies to it
@@ -399,12 +399,12 @@ public class Replica extends AbstractReplica {
 
     /* Coordinator */
     private void onHeartbeatTick(HeartbeatTick msg) {
-        broadcast(new HeartbeatMsg(this.lastUpdate.epoch), Crash.Type.Heartbeat);
+        broadcast(new HeartbeatMsg(this.lastUpdate.epoch()), Crash.Type.Heartbeat);
     }
 
     /* Replica: restart the coordinator timeout */
     private void onHeartbeatMsg(HeartbeatMsg msg) {
-        if (msg.epoch < this.lastUpdate.epoch) return;
+        if (msg.epoch < this.lastUpdate.epoch()) return;
 
         cancel(this.heartbeatTimer);
         this.heartbeatTimer = schedule(new CoordinatorTimeout(), getHeartbeatTimeout());
@@ -466,14 +466,14 @@ public class Replica extends AbstractReplica {
     /* Start a new token holding only this replica's last update, and send it to the successor */
     private void sendFreshToken() {
         tell(
-                new ElectionMsg(new TreeMap<>(Map.of(this.id, this.lastUpdate)), this.id, this.lastUpdate.epoch),
+                new ElectionMsg(new TreeMap<>(Map.of(this.id, this.lastUpdate)), this.id, this.lastUpdate.epoch()),
                 this.replicasGroup.get(this.successor));
         setElectionAckTimer(this.successor);
     }
 
     private void onElectionMsg(ElectionMsg msg) {
         tell(new ACKElectionMsg(), getSender());
-        if (msg.epoch < this.lastUpdate.epoch) return;
+        if (msg.epoch < this.lastUpdate.epoch()) return;
 
         if (this.mode != ReplicaMode.ELECTION) enterElection();
 
@@ -529,9 +529,9 @@ public class Replica extends AbstractReplica {
         new TreeSet<>(unstable.keySet()).forEach(k -> deliverUpdate(k, updatesHistory.get(k)));
 
         // 2. Set a new epoch = epoch of the last update + 1 & the sequence number restarts at 0
-        int newEpoch = this.lastUpdate.epoch + 1;
         this.coordinator_id = this.id;
-        this.lastUpdate = new EpochSeqNum(newEpoch, 0);
+        this.lastUpdate = this.lastUpdate.incrementEpoch();
+        int newEpoch = this.lastUpdate.epoch();
 
         // 3. Send each replica only what it is missing, starting from its last update
         for (Map.Entry<Integer, EpochSeqNum> eu : electionUpdateList.entrySet()) {
@@ -550,7 +550,7 @@ public class Replica extends AbstractReplica {
 
     private void onSyncMsg(SyncMsg msg) {
         // 1. Ignore stale or duplicate synchronizations
-        if (msg.newEpoch <= this.lastUpdate.epoch) return;
+        if (msg.newEpoch <= this.lastUpdate.epoch()) return;
 
         callbackOnCoordinatorElected(msg.newCoordinatorId);
 
