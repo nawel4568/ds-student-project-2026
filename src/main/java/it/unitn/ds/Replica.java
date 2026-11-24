@@ -58,6 +58,8 @@ public class Replica extends AbstractReplica {
     /* The coordinator did not send the WriteOKMsg for an update this replica acked */
     private record WriteOKTimeout(EpochSeqNum epochSeqNum) implements Serializable {}
 
+    /* The coordinator did not receive an ACK for the ElectionMsg it sent */
+    private record ACKElectionTimeout(ActorRef replica) implements Serializable {}
     // =================================================================================
     // Construction
     // =================================================================================
@@ -163,16 +165,16 @@ public class Replica extends AbstractReplica {
                 .match(AckMsg.class, this::onAckMsg)
                 .match(WriteOKMsg.class, this::onWriteOKMsg)
                 .match(HeartbeatTick.class, this::onHeartbeatTick)
+                .match(ElectionMsg.class, this::onRedundantElectionMsg)
                 .build();
     }
 
     public final Receive electionBehavior() {
-        return createBaseReceiveBuilder()
-                // TODO: - handle another Election (best candidate crashes)
-                .match(ReadReqMsg.class, this::onReadReqMsg)
+        return createBaseReceiveBuilder().match(ReadReqMsg.class, this::onReadReqMsg)
                 .match(ElectionMsg.class, this::onElectionMsg)
                 .match(SyncMsg.class, this::onSyncMsg)
                 .match(ACKElectionMsg.class, this::onACKElectionMsg)
+                .match(ACKElectionTimeout.class, this::onACKElectionTimeout)
                 .build();
     }
 
@@ -409,10 +411,20 @@ public class Replica extends AbstractReplica {
     // Coordinator election
     // =================================================================================
 
+    private Cancellable electionAckTimer;
+
+    private void setElectionAckTimer(ActorRef replica) {
+        if (this.electionAckTimer != null && !this.electionAckTimer.isCancelled()) this.electionAckTimer.cancel();
+        this.electionAckTimer = schedule(new ACKElectionTimeout(replica), getRequestTimeout());
+    }
+
+    private void cancelElectionAckTimer() {
+        if (this.electionAckTimer != null && !this.electionAckTimer.isCancelled()) this.electionAckTimer.cancel();
+    }
+
     private void startElection() {
         callbackOnElectionStarted(this.coordinator_id);
         // Starting the Election protocol the first time to timeout
-        // case 1) if timeout is HEARTBEAT, UPDATE, WRITEOK
         setBehavior(ReplicaMode.ELECTION);
         cancelTimers();
 
@@ -421,23 +433,17 @@ public class Replica extends AbstractReplica {
 
         // send the message (id, updateList) to the successor
         tell(newElectionMsg, this.successor);
-        // TODO: set ACK timeout
-
-        // case 2) if timeout is ELECTIONACK
-        // TODO: compute the next successor and send the ElectionMsg
+        setElectionAckTimer(this.successor);
     }
 
     private void onElectionMsg(ElectionMsg msg) {
         tell(new ACKElectionMsg(), getSender());
         if (msg.epoch < this.lastUpdate.epoch) return;
 
-        if (this.mode != ReplicaMode.ELECTION) {
-            callbackOnElectionStarted(this.coordinator_id);
-            setBehavior(ReplicaMode.ELECTION);
-            // when receiving the election msg from the replica that detected the crash of the coord
-            // Sends an ACK back
-            cancelTimers();
-        }
+        callbackOnElectionStarted(this.coordinator_id);
+        setBehavior(ReplicaMode.ELECTION);
+        // when receiving the election msg from the replica that detected the crash of the coord
+        // Sends an ACK back
         cancelTimers();
 
         // add its id and its last update to the Update List
@@ -449,7 +455,7 @@ public class Replica extends AbstractReplica {
             } else {
                 // forward ELECTION to the candidate replica
                 tell(msg, this.replicasGroup.get(msg.candidateID));
-                // TODO: set ACK timeout
+                setElectionAckTimer(this.replicasGroup.get(msg.candidateID));
             }
         } else {
             TreeMap<Integer, EpochSeqNum> visitedReplicas = new TreeMap<>(msg.visitedReplicas);
@@ -464,12 +470,23 @@ public class Replica extends AbstractReplica {
             }
 
             tell(new ElectionMsg(visitedReplicas, newCandidateID, msg.epoch), this.successor);
-            // TODO: set ACK timeout
+            setElectionAckTimer(this.successor);
         }
     }
 
+    private void onRedundantElectionMsg(ElectionMsg msg) {
+        tell(new ACKElectionMsg(), getSender());
+    }
+
     private void onACKElectionMsg(ACKElectionMsg msg) {
-        // cancel the ACK timeout
+        cancelElectionAckTimer();
+    }
+
+    private void onACKElectionTimeout(ACKElectionTimeout msg) {
+        log("ELECTIONACK timeout");
+        this.successor =
+                this.replicasGroup.get((msg.replica.path().name().charAt(0) - '0' + 1) % this.replicasGroup.size());
+        startElection();
     }
 
     private void becomeCoordinator(SortedMap<Integer, EpochSeqNum> electionUpdateList) {
@@ -508,7 +525,8 @@ public class Replica extends AbstractReplica {
 
         callbackOnCoordinatorElected(msg.newCoordinatorId);
 
-        // TODO: cancel election timeout and ACK timeout
+        cancelElectionAckTimer();
+        // TODO: cancel election timeout
 
         // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
         for (Map.Entry<EpochSeqNum, UpdateEntry> e : msg.missingUpdates.entrySet()) {
