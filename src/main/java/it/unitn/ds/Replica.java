@@ -317,11 +317,10 @@ public class Replica extends AbstractReplica {
         debug("received UPDATE " + msg.epochSeqNum + " from "
                 + getSender().path().name());
 
-        if (getSelf().equals(msg.replicaRequested)) {
-            Cancellable forwarded = updateTimers.remove(new UpdateTimeout(msg.clientRequesting, msg.reqId));
-            pendingWrites.remove(new UpdateTimeout(msg.clientRequesting, msg.reqId));
-            if (forwarded != null) forwarded.cancel();
-        }
+        UpdateTimeout key = new UpdateTimeout(msg.clientRequesting, msg.reqId);
+        pendingWrites.remove(key);
+        Cancellable forwarded = updateTimers.remove(key);
+        if (forwarded != null) forwarded.cancel();
 
         this.lastUpdate = msg.epochSeqNum;
         updatesHistory.put(
@@ -374,9 +373,7 @@ public class Replica extends AbstractReplica {
     private void deliverUpdate(EpochSeqNum id, UpdateEntry u) {
         updatesHistory.put(id, u);
         applyUpdate(id, u);
-        if (getSelf().equals(u.replicaRequested)) {
-            pendingWrites.remove(new UpdateTimeout(u.clientRequesting, u.reqId));
-        }
+        pendingWrites.remove(new UpdateTimeout(u.clientRequesting, u.reqId));
     }
 
     // =================================================================================
