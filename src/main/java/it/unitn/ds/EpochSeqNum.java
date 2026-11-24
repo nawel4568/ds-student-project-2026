@@ -16,8 +16,8 @@ public final class EpochSeqNum implements Serializable, Comparable<EpochSeqNum> 
         return new EpochSeqNum(this.epoch + 1, 0);
     }
 
-    public EpochSeqNum incrementSeqNum(){
-        return new EpochSeqNum(this.epoch, this.seqNum+1);
+    public EpochSeqNum incrementSeqNum() {
+        return new EpochSeqNum(this.epoch, this.seqNum + 1);
     }
 
     @Override
@@ -42,6 +42,4 @@ public final class EpochSeqNum implements Serializable, Comparable<EpochSeqNum> 
     public String toString() {
         return "<" + epoch + "," + seqNum + ">";
     }
-
-
 }

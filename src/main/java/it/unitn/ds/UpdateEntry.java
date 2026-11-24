@@ -3,8 +3,8 @@ package it.unitn.ds;
 import akka.actor.ActorRef;
 
 /**
- * One write in a replica's update history: positions[index] = value, plus who to reply to.
- * Immutable, so it can be shared in SyncMsg; whether it is still pending is tracked by the replica.
+ * One write in a replica's update history: positions[index] = value, plus who to reply to. Immutable, so it can be
+ * shared in SyncMsg; whether it is still pending is tracked by the replica.
  */
 public final class UpdateEntry {
     public final int index;

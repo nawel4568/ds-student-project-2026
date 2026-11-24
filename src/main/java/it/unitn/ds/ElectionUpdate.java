@@ -13,8 +13,7 @@ public class ElectionUpdate implements Comparable<ElectionUpdate> {
     @Override
     public int compareTo(ElectionUpdate other) {
         int compare = this.lastUpdate.compareTo(other.lastUpdate);
-        if (compare != 0)
-            return compare;
+        if (compare != 0) return compare;
         // otherwise compare by replica ID
         return Integer.compare(this.replicaID, other.replicaID);
     }

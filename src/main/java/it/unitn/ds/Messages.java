@@ -1,15 +1,14 @@
 package it.unitn.ds;
 
+import akka.actor.ActorRef;
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
-import akka.actor.ActorRef;
-
 /**
- * Messages exchanged between actors. Akka passes local messages by reference, so every
- * message must be immutable (checked by ImmutableMessagesTest).
+ * Messages exchanged between actors. Akka passes local messages by reference, so every message must be immutable
+ * (checked by ImmutableMessagesTest).
  */
 public final class Messages {
 
