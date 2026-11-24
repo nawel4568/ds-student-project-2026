@@ -3,9 +3,7 @@ package it.unitn.ds;
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.SortedMap;
-import java.util.SortedSet;
 import java.util.TreeMap;
-import java.util.TreeSet;
 
 import akka.actor.ActorRef;
 
@@ -144,14 +142,17 @@ public final class Messages {
 
     /* Election token circulating on the ring, with each participant's last update */
     public static final class ElectionMsg implements Serializable {
-        public final SortedSet<ElectionUpdate> electionUpdateList;
+        public final SortedMap<Integer, EpochSeqNum> visitedReplicas;
+        public final Integer coordinatorCandidateID;
 
-        public ElectionMsg(SortedSet<ElectionUpdate> electionUpdateList) {
-            this.electionUpdateList = Collections.unmodifiableSortedSet(new TreeSet<>(electionUpdateList));
+        public ElectionMsg(SortedMap<Integer, EpochSeqNum> visitedReplicas, Integer coordinatorCandidateID) {
+            this.visitedReplicas = Collections.unmodifiableSortedMap(new TreeMap<>(visitedReplicas));
+            this.coordinatorCandidateID = coordinatorCandidateID;
         }
 
         public ElectionMsg(ElectionMsg other) {
-            this.electionUpdateList = other.electionUpdateList;
+            this.visitedReplicas = other.visitedReplicas;
+            this.coordinatorCandidateID = other.coordinatorCandidateID;
         }
     }
 
