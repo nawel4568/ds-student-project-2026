@@ -59,7 +59,7 @@ public class Client extends AbstractClient {
     @Override
     public void sendRead(ActorRef replica, int index) {
         int reqId = nextReqId++;
-        log("requesting READ (" + index + ") to Replica " + replica.path().name());
+        log("requesting READ (" + index + ") to " + replica.path().name());
         replica.tell(new Messages.ReadReqMsg(reqId, index), getSelf());
         startTimer(reqId, getReadTimeoutDelay(), new ReadTimer(reqId, new ReadTimeout(getSelf(), replica, index)));
     }
@@ -67,8 +67,7 @@ public class Client extends AbstractClient {
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
         int reqId = nextReqId++;
-        log("requesting WRITE (" + index + ", " + value + ") to Replica "
-                + replica.path().name());
+        log("requesting WRITE (" + index + ", " + value + ") to " + replica.path().name());
         replica.tell(new Messages.WriteReqMsg(reqId, index, value), getSelf());
         startTimer(
                 reqId,
