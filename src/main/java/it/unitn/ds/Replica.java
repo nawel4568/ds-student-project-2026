@@ -37,7 +37,8 @@ public class Replica extends AbstractReplica {
     private enum ReplicaMode {
         NORMAL,
         COORDINATOR,
-        ELECTION
+        ELECTION,
+        CRASHED
     };
 
     private ReplicaMode mode = ReplicaMode.NORMAL;
@@ -128,7 +129,7 @@ public class Replica extends AbstractReplica {
     public void crash(AbstractReplica.Crash how_to_crash) {
         switch (how_to_crash.type) {
             case Crash.Type.Now:
-                clearReceive(); // AbstractReplica logs CRASHED right after this
+                setBehavior(ReplicaMode.CRASHED); // AbstractReplica logs CRASHED right after this
                 break;
 
             default:
@@ -181,6 +182,11 @@ public class Replica extends AbstractReplica {
                 .build();
     }
 
+    /* Crashed: ignore every message, timers included */
+    public final Receive crashedBehavior() {
+        return receiveBuilder().matchAny(m -> {}).build();
+    }
+
     public final void setBehavior(ReplicaMode newMode) {
         this.mode = newMode;
         switch (newMode) {
@@ -192,6 +198,9 @@ public class Replica extends AbstractReplica {
                 break;
             case ELECTION:
                 getContext().become(electionBehavior());
+                break;
+            case CRASHED:
+                getContext().become(crashedBehavior());
                 break;
         }
     }
@@ -245,14 +254,10 @@ public class Replica extends AbstractReplica {
         writeOKTimers.clear();
     }
 
-    private void clearReceive() {
-        getContext().become(receiveBuilder().matchAny(m -> {}).build());
-    }
-
     /* Call after processing a message of type t */
     private boolean crashIf(Crash.Type t) {
         if (!crashTrigger.tick(t)) return false;
-        clearReceive();
+        setBehavior(ReplicaMode.CRASHED);
         log("CRASHED");
         return true;
     }
