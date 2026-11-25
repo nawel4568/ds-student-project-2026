@@ -232,8 +232,8 @@ record Scenario(String description, int replicas, int clients, int coordinator, 
         ALL.put(
                 "concurrent-elections",
                 new Scenario(
-                        "two replicas start an election at the same time: both tokens circulate, all agree on one"
-                                + " coordinator",
+                        "every live replica starts its own election at the same time: the tokens circulate"
+                                + " concurrently and all agree on one coordinator",
                         5,
                         2,
                         0,
@@ -242,17 +242,19 @@ record Scenario(String description, int replicas, int clients, int coordinator, 
                                 // second beat, request timeouts (~0.3 s) fire well before heartbeat timeouts (~1.1 s).
                                 "say Wait for a fresh heartbeat, so only request timeouts can notice the crash",
                                 "wait 200",
-                                "say Crash the coordinator R0, then C0 writes via R2 and C1 writes via R4",
+                                "say Crash the coordinator R0, then send one write through each live replica",
                                 "crash 0",
-                                "write 0 2 1 10",
-                                "write 1 4 2 20",
-                                "say R2 and R4 both time out waiting for the UPDATE and each starts its own election"
-                                        + " (log: UPDATE timeout)",
+                                "write 0 1 1 10",
+                                "write 0 2 2 20",
+                                "write 1 3 3 30",
+                                "write 1 4 4 40",
+                                "say R1..R4 all time out waiting for their UPDATE together and each starts an"
+                                        + " election (log: UPDATE timeout)",
                                 "wait 4000",
-                                "say One coordinator wins (equal updates: lowest id, R1); both pending writes commit",
-                                "read 0 3 1",
-                                "read 1 3 2",
+                                "say One coordinator wins (equal updates: lowest id, R1); all four pending writes commit",
+                                "read 0 2 1",
+                                "read 1 3 4",
                                 "wait 1000",
-                                "say Done: two concurrent elections, one coordinator")));
+                                "say Done: four concurrent elections, one coordinator")));
     }
 }
