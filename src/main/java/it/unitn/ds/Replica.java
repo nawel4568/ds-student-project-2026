@@ -557,8 +557,11 @@ public class Replica extends AbstractReplica {
         cancel(this.electionAckTimer);
         cancel(this.electionTimer);
 
+        TreeMap<EpochSeqNum, UpdateEntry> todo = new TreeMap<>(msg.missingUpdates);
+        unstable.keySet().forEach(k -> todo.putIfAbsent(k, updatesHistory.get(k)));
+
         // 2. Deliver missing updates in <e,i> order (the map is sorted), without duplicates
-        for (Map.Entry<EpochSeqNum, UpdateEntry> e : msg.missingUpdates.entrySet()) {
+        for (Map.Entry<EpochSeqNum, UpdateEntry> e : todo.entrySet()) {
             if (updatesHistory.containsKey(e.getKey()) && !unstable.containsKey(e.getKey()))
                 continue; // already delivered
             deliverUpdate(e.getKey(), e.getValue());
