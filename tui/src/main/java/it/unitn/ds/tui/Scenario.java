@@ -1,16 +1,91 @@
 package it.unitn.ds.tui;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * A scripted course of events, run on a fresh system. Each step is a TUI command, {@code wait <ms>} or
- * {@code say <text>} (narration shown above the prompt).
+ * A scripted course of events, run on a fresh system. Each step is a TUI action ({@code read <client> <replica>
+ * <idx>}, {@code write <client> <replica> <idx> <val>}, {@code crash <replica> [type] [n]}), {@code wait <ms>} or
+ * {@code say <text>} (narration).
  */
 record Scenario(String description, int replicas, int clients, int coordinator, List<String> steps) {
 
     static final Map<String, Scenario> ALL = new LinkedHashMap<>();
+
+    static final String LEGEND = "● client sends  ► replica receives  ✗ crash  ⚑ scheduled crash  ┆ wait";
+    private static final int LANE = 4, WRAP = 60;
+
+    String setup() {
+        return replicas + " replicas (coordinator R" + coordinator + "), " + clients + " clients";
+    }
+
+    /** Lane titles: one column per client, then one per replica. */
+    String lanes() {
+        StringBuilder b = new StringBuilder();
+        for (int l = 0; l < clients + replicas; l++)
+            b.append(String.format("%-" + LANE + "s", l < clients ? "C" + l : "R" + (l - clients)));
+        return b.toString();
+    }
+
+    /**
+     * One entry per step, aligned under {@link #lanes()}: a sequence-diagram row for actions, wrapped text for
+     * narration. Entries may span several lines.
+     */
+    List<String> diagram() {
+        int lanes = clients + replicas;
+        boolean[] crashed = new boolean[lanes];
+        List<String> out = new ArrayList<>();
+        for (String step : steps) {
+            String[] a = step.split(" ");
+            if (a[0].equals("say")) {
+                out.add(wrap("» " + step.substring(4)));
+                continue;
+            }
+            char[] row = new char[lanes * LANE];
+            Arrays.fill(row, ' ');
+            for (int l = 0; l < lanes; l++) if (!crashed[l]) row[l * LANE] = a[0].equals("wait") ? '┆' : '│';
+            String label =
+                    switch (a[0]) {
+                        case "wait" -> String.format("wait %.1f s", Integer.parseInt(a[1]) / 1000.0);
+                        case "read", "write" -> {
+                            int from = Integer.parseInt(a[1]) * LANE, to = (clients + Integer.parseInt(a[2])) * LANE;
+                            Arrays.fill(row, from, to, '─');
+                            row[from] = '●';
+                            row[to] = '►';
+                            yield a[0].equals("read") ? "read [" + a[3] + "]" : "write [" + a[3] + "]=" + a[4];
+                        }
+                        case "crash" -> {
+                            int lane = clients + Integer.parseInt(a[1]);
+                            if (a.length < 3 || a[2].equals("Now")) {
+                                row[lane * LANE] = '✗';
+                                crashed[lane] = true;
+                                yield "R" + a[1] + " crashes";
+                            }
+                            row[lane * LANE] = '⚑';
+                            yield "R" + a[1] + " will crash after " + a[3] + " " + a[2] + " message(s)";
+                        }
+                        default -> step;
+                    };
+            out.add(new String(row) + label);
+        }
+        return out;
+    }
+
+    private static String wrap(String text) {
+        StringBuilder b = new StringBuilder();
+        int lineStart = 0;
+        for (String word : text.split(" ")) {
+            if (b.length() - lineStart + word.length() > WRAP) {
+                b.append("\n  ");
+                lineStart = b.length() - 2;
+            } else if (!b.isEmpty()) b.append(' ');
+            b.append(word);
+        }
+        return b.toString();
+    }
 
     static {
         ALL.put(
