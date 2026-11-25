@@ -24,6 +24,7 @@ import com.googlecode.lanterna.gui2.table.TableModel;
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.screen.Screen;
 import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
+import com.typesafe.config.ConfigFactory;
 import it.unitn.ds.AbstractClient.ReadRequest;
 import it.unitn.ds.AbstractClient.ReadResult;
 import it.unitn.ds.AbstractClient.ReadTimeout;
@@ -39,12 +40,16 @@ import it.unitn.ds.AbstractReplica.UpdateApplied;
 import it.unitn.ds.Client;
 import it.unitn.ds.Logger;
 import it.unitn.ds.Replica;
+import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -67,6 +72,8 @@ public final class Tui {
         USAGE.put("read", List.of("<client>", "<replica>", "<idx>"));
         USAGE.put("write", List.of("<client>", "<replica>", "<idx>", "<val>"));
         USAGE.put("crash", List.of("<replica>", "[type]", "[n]"));
+        USAGE.put("scenario", List.of("[scenario]"));
+        USAGE.put("reset", List.of());
         USAGE.put("debug", List.of());
         USAGE.put("quit", List.of());
     }
@@ -104,17 +111,23 @@ public final class Tui {
         String last = "-";
     }
 
-    private final ActorSystem system = ActorSystem.create("Tui");
-    private final Queue<Event> events = new ConcurrentLinkedQueue<>();
+    private final int nReplicas, nClients, coordinator; // command-line setup, restored by "reset"
+    private ActorSystem system;
+    private Queue<Event> events;
     private final List<ActorRef> replicas = new ArrayList<>();
     private final List<ActorRef> clients = new ArrayList<>();
     private final Map<ActorRef, Integer> replicaIds = new HashMap<>();
     private final Map<ActorRef, Integer> clientIds = new HashMap<>();
-    private final ReplicaView[] replicaViews;
-    private final ClientView[] clientViews;
+    private ReplicaView[] replicaViews;
+    private ClientView[] clientViews;
     private final Deque<String> log = new ArrayDeque<>();
     private final RandomAccessFile logFile;
     private boolean debug;
+
+    // Running scenario: remaining steps and when the next one is due
+    private final Deque<String> script = new ArrayDeque<>();
+    private long nextStepAt;
+    private String scenarioName = "";
 
     // Widgets
     private final Table<String> replicaTable = new Table<>("");
@@ -122,15 +135,47 @@ public final class Tui {
     private final Label logLabel = new Label("");
     private final Label hintLabel = new Label("");
     private final Label statusLabel = new Label("");
+    private final Label narrationLabel = new Label("");
     private final CommandBox commandBox = new CommandBox();
     private final BasicWindow window = new BasicWindow();
 
     Tui(int nReplicas, int nClients, int coordinator) throws Exception {
+        this.nReplicas = nReplicas;
+        this.nClients = nClients;
+        this.coordinator = coordinator;
         Path logPath = Files.createTempFile("ds-tui", ".log");
         Logger.setDestinationFile(logPath.toString());
         logFile = new RandomAccessFile(logPath.toFile(), "r");
+        boot(nReplicas, nClients, coordinator);
+    }
 
-        ActorRef probe = system.actorOf(Props.create(Probe.class, () -> new Probe(events)), "tui_probe");
+    /** Stops any running scenario and boots a fresh system. */
+    private void restart(int nReplicas, int nClients, int coordinator) {
+        script.clear();
+        narrationLabel.setText("");
+        boot(nReplicas, nClients, coordinator);
+    }
+
+    /** (Re)creates the whole system from scratch, discarding the previous one. */
+    private void boot(int nReplicas, int nClients, int coordinator) {
+        if (system != null) system.terminate();
+        try {
+            logFile.seek(logFile.length()); // don't attribute the old system's lines to the new one
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        // Akka's own logger prints to stdout (e.g. dead letters after a crash), which would scribble over the screen.
+        system = ActorSystem.create(
+                "Tui", ConfigFactory.parseString("akka.loglevel = OFF\nakka.stdout-loglevel = OFF"));
+        // New queue: late callbacks from the terminated system land in the old one, which nobody reads.
+        Queue<Event> queue = events = new ConcurrentLinkedQueue<>();
+        replicas.clear();
+        clients.clear();
+        replicaIds.clear();
+        clientIds.clear();
+        log.clear();
+
+        ActorRef probe = system.actorOf(Props.create(Probe.class, () -> new Probe(queue)), "tui_probe");
         replicaViews = new ReplicaView[nReplicas];
         Map<Integer, ActorRef> group = new HashMap<>();
         for (int i = 0; i < nReplicas; i++) {
@@ -210,6 +255,7 @@ public final class Tui {
                 commandBox, LinearLayout.createLayoutData(LinearLayout.Alignment.Fill, LinearLayout.GrowPolicy.CanGrow));
         Panel bottom = new Panel(new LinearLayout(Direction.VERTICAL));
         bottom.addComponent(hintLabel.setForegroundColor(TextColor.ANSI.BLACK_BRIGHT));
+        bottom.addComponent(narrationLabel.setForegroundColor(TextColor.ANSI.YELLOW));
         bottom.addComponent(statusLabel.setForegroundColor(TextColor.ANSI.CYAN));
         bottom.addComponent(prompt, LinearLayout.createLayoutData(LinearLayout.Alignment.Fill));
 
@@ -227,11 +273,21 @@ public final class Tui {
 
         // Single thread: drain callbacks, then let Lanterna handle input, resizes and (delta) redraws.
         while (!gui.getWindows().isEmpty()) {
+            while (!script.isEmpty() && System.currentTimeMillis() >= nextStepAt) step(script.poll());
             Event e;
             while ((e = events.poll()) != null) apply(e);
             tailLog();
             refreshWidgets();
             if (!gui.getGUIThread().processEventsAndUpdate()) Thread.sleep(20);
+        }
+    }
+
+    private void step(String step) {
+        String[] a = step.split(" ", 2);
+        switch (a[0]) {
+            case "wait" -> nextStepAt = System.currentTimeMillis() + Long.parseLong(a[1]);
+            case "say" -> narrationLabel.setText(scenarioName + ": " + a[1]);
+            default -> statusLabel.setText(execute(step));
         }
     }
 
@@ -344,6 +400,7 @@ public final class Tui {
                     case "<client>" -> ids(clients.size());
                     case "<replica>" -> ids(replicas.size());
                     case "[type]" -> Arrays.stream(Crash.Type.values()).map(Enum::name).toList();
+                    case "[scenario]" -> List.copyOf(Scenario.ALL.keySet());
                     default -> List.of();
                 };
         return all.stream()
@@ -430,6 +487,21 @@ public final class Tui {
                     replicas.get(r).tell(new Crash(type, n), ActorRef.noSender());
                     return "crash R" + r + ": " + type + (type == Crash.Type.Now ? "" : " after " + n);
                 }
+                case "scenario" -> {
+                    if (a.length == 1) return "scenarios: " + String.join(", ", Scenario.ALL.keySet());
+                    Scenario s = Scenario.ALL.get(a[1]);
+                    if (s == null) return "unknown scenario: " + a[1];
+                    restart(s.replicas(), s.clients(), s.coordinator());
+                    scenarioName = a[1];
+                    narrationLabel.setText(a[1] + ": " + s.description());
+                    script.addAll(s.steps());
+                    nextStepAt = System.currentTimeMillis() + 1000; // let the system initialise first
+                    return "running scenario " + a[1] + " on a fresh system";
+                }
+                case "reset" -> {
+                    restart(nReplicas, nClients, coordinator);
+                    return "fresh system started";
+                }
                 case "debug" -> {
                     debug = !debug;
                     Logger.setDebugEnabled(debug);
@@ -461,12 +533,19 @@ public final class Tui {
         throw new IllegalArgumentException("unknown crash type: " + s);
     }
 
+    // Only the bare line: "CRASHED: <type> (n)" is AbstractReplica echoing the request, also when merely arming.
+    private static final Pattern CRASHED = Pattern.compile("\\[Replica (\\d+)\\] CRASHED$");
+
     private void tailLog() throws Exception {
         String line;
         while ((line = logFile.readLine()) != null) {
             // readLine decodes as Latin-1; re-decode as the UTF-8 the Logger writes.
             line = new String(line.getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
             log.addLast(line.length() > 11 ? line.substring(11) : line); // drop the date, keep the time
+            // A deferred crash fires no callback; the replica only logs it, so take it from there.
+            Matcher m = CRASHED.matcher(line);
+            if (m.find() && Integer.parseInt(m.group(1)) < replicaViews.length)
+                replicaViews[Integer.parseInt(m.group(1))].crashed = true;
             if (log.size() > LOG_LINES_KEPT) log.removeFirst();
         }
     }
