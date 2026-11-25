@@ -578,6 +578,12 @@ public class Replica extends AbstractReplica {
     }
 
     private void bufferWriteMsg(WriteReqMsg msg) {
+        if (msg.index < 0 || msg.index >= POSITIONS_LIST_LENGTH) {
+            tell(
+                    new WriteReplyMsg(msg.reqId, new AbstractClient.WriteResult(false, msg.index, msg.value, this.id)),
+                    getSender());
+            return;
+        }
         UpdateRequestMsg req = new UpdateRequestMsg(msg.index, msg.value, msg.reqId, getSender());
         this.pendingWrites.put(new WriteId(getSender(), msg.reqId), new PendingWrite(req, null));
     }
