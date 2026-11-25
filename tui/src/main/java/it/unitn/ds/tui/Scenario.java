@@ -205,5 +205,54 @@ record Scenario(String description, int replicas, int clients, int coordinator, 
                                 "read 1 4 1",
                                 "wait 2500",
                                 "say Done")));
+        ALL.put(
+                "most-updated-wins",
+                new Scenario(
+                        "only R2 stores the newest UPDATE before the coordinator crashes: the election picks the most"
+                                + " up-to-date replica, R2",
+                        5,
+                        2,
+                        0,
+                        List.of(
+                                "say Write [1]=10: every replica applies it",
+                                "write 0 1 1 10",
+                                "wait 1500",
+                                "say Crash R1, and arm R0 to crash after 2 UPDATE messages (to R1, lost, and to R2)",
+                                "crash 1",
+                                "crash 0 Update 2",
+                                "say Write [2]=20 via R3: only R2 stores the UPDATE, so R2 holds the most recent update",
+                                "write 0 3 2 20",
+                                "say R3 and R2 time out and start an election; the token carries every replica's last"
+                                        + " update and R2's is the newest",
+                                "wait 5000",
+                                "say R2 is the new coordinator and completes [2]=20 on every live replica",
+                                "read 1 4 2",
+                                "wait 1000",
+                                "say Done: R2 was elected because it had the most recent update")));
+        ALL.put(
+                "concurrent-elections",
+                new Scenario(
+                        "two replicas start an election at the same time: both tokens circulate, all agree on one"
+                                + " coordinator",
+                        5,
+                        2,
+                        0,
+                        List.of(
+                                // Heartbeats start with the system, 1 s before the first step: right after the
+                                // second beat, request timeouts (~0.3 s) fire well before heartbeat timeouts (~1.1 s).
+                                "say Wait for a fresh heartbeat, so only request timeouts can notice the crash",
+                                "wait 200",
+                                "say Crash the coordinator R0, then C0 writes via R2 and C1 writes via R4",
+                                "crash 0",
+                                "write 0 2 1 10",
+                                "write 1 4 2 20",
+                                "say R2 and R4 both time out waiting for the UPDATE and each starts its own election"
+                                        + " (log: UPDATE timeout)",
+                                "wait 4000",
+                                "say One coordinator wins (equal updates: lowest id, R1); both pending writes commit",
+                                "read 0 3 1",
+                                "read 1 3 2",
+                                "wait 1000",
+                                "say Done: two concurrent elections, one coordinator")));
     }
 }

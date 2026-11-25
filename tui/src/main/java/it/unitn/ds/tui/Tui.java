@@ -143,6 +143,10 @@ public final class Tui {
     private final StyledText scenarioText = new StyledText();
     private final StyledText logText = new StyledText();
     private final Label statusLabel = new Label("");
+    private final Panel actions = new Panel(new LinearLayout(Direction.VERTICAL)); // rows of buttons
+    private List<Button> buttons;
+    private int actionsWidth = -1;
+    private static final int SCENARIO_MIN_WIDTH = 77; // the scenario panel's diagram, border included
 
     Tui(int nReplicas, int nClients, int coordinator) throws Exception {
         this.nReplicas = nReplicas;
@@ -264,7 +268,7 @@ public final class Tui {
         });
         clientTable.setEnabled(false); // display only: keep it out of the focus cycle
 
-        Panel actions = Panels.horizontal(
+        buttons = List.of(
                 new HoverButton("Read", () -> requestDialog(false)),
                 new HoverButton("Write", () -> requestDialog(true)),
                 new HoverButton("Crash", this::crashDialog),
@@ -340,7 +344,32 @@ public final class Tui {
         Event e;
         while ((e = events.poll()) != null) apply(e);
         tailLog();
+        layoutButtons();
         refreshWidgets();
+    }
+
+    /**
+     * Lanterna has no flow layout: put the buttons in as many rows as needed so that the left column stays within
+     * what the scenario panel leaves free (never narrower than the replica table), instead of clipping them.
+     */
+    private void layoutButtons() {
+        int free = gui.getScreen().getTerminalSize().getColumns() - SCENARIO_MIN_WIDTH;
+        int width = Math.max(replicaTable.getPreferredSize().getColumns() + 2, free);
+        if (width == actionsWidth) return;
+        actionsWidth = width;
+        actions.removeAllComponents();
+        Panel row = null;
+        int used = 0;
+        for (Button b : buttons) {
+            int w = b.getPreferredSize().getColumns();
+            if (row == null || used + 1 + w > width) {
+                row = new Panel(new LinearLayout(Direction.HORIZONTAL));
+                actions.addComponent(row);
+                used = -1; // no gap before the first button of a row
+            }
+            row.addComponent(b);
+            used += 1 + w;
+        }
     }
 
     // =================================================================================
