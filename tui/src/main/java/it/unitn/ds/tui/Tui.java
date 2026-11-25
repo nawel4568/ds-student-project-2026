@@ -4,7 +4,9 @@ import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.Props;
+import com.googlecode.lanterna.SGR;
 import com.googlecode.lanterna.TerminalSize;
+import com.googlecode.lanterna.TerminalTextUtils;
 import com.googlecode.lanterna.TextColor;
 import com.googlecode.lanterna.graphics.SimpleTheme;
 import com.googlecode.lanterna.graphics.ThemeDefinition;
@@ -53,6 +55,7 @@ import it.unitn.ds.AbstractReplica.UpdateApplied;
 import it.unitn.ds.Client;
 import it.unitn.ds.Logger;
 import it.unitn.ds.Replica;
+import it.unitn.ds.tui.StyledText.Seg;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
@@ -137,8 +140,8 @@ public final class Tui {
     private final BasicWindow window = new BasicWindow();
     private final Table<String> replicaTable = new Table<>("");
     private final Table<String> clientTable = new Table<>("");
-    private final Label scenarioLabel = new Label("");
-    private final Label logLabel = new Label("");
+    private final StyledText scenarioText = new StyledText();
+    private final StyledText logText = new StyledText();
     private final Label statusLabel = new Label("");
 
     Tui(int nReplicas, int nClients, int coordinator) throws Exception {
@@ -210,7 +213,9 @@ public final class Tui {
             throw new IllegalArgumentException("need replicas>=1, clients>=1, 0<=coordinator<replicas");
 
         Tui tui = new Tui(nReplicas, nClients, coordinator);
-        DefaultTerminalFactory factory = new DefaultTerminalFactory().setMouseCaptureMode(MouseCaptureMode.CLICK_RELEASE);
+        // Moves too, for button hover.
+        DefaultTerminalFactory factory =
+                new DefaultTerminalFactory().setMouseCaptureMode(MouseCaptureMode.CLICK_RELEASE_DRAG_MOVE);
         try (Screen screen = factory.createScreen()) {
             screen.startScreen();
             tui.run(new MultiWindowTextGUI(new SeparateTextGUIThread.Factory(), screen));
@@ -230,16 +235,21 @@ public final class Tui {
                 true, def, def, TextColor.ANSI.WHITE, TextColor.ANSI.BLACK_BRIGHT, TextColor.ANSI.BLACK,
                 TextColor.ANSI.CYAN, def));
 
+        // ID in the actor's own color (same as its log lines and diagram lane), status in the status color.
         replicaTable.setTableCellRenderer(new DefaultTableCellRenderer<>() {
             @Override
             protected void applyStyle(Table<String> t, String cell, int col, int row, boolean sel, TextGUIGraphics g) {
                 ThemeDefinition theme = t.getThemeDefinition();
                 if (sel) {
                     g.applyThemeStyle(t.isFocused() ? theme.getActive() : theme.getSelected());
-                } else {
-                    g.applyThemeStyle(theme.getNormal());
-                    g.setForegroundColor(statusColor(t.getTableModel().getCell(1, row)));
+                    return;
                 }
+                g.applyThemeStyle(theme.getNormal());
+                String status = t.getTableModel().getCell(1, row);
+                if (col == 0) g.setForegroundColor(replicaColor(row)).enableModifiers(SGR.BOLD);
+                else if (col == 1) g.setForegroundColor(statusColor(status));
+                else if (col == 3) g.setForegroundColor(TextColor.ANSI.RED);
+                else if (status.equals("CRASHED")) g.setForegroundColor(TextColor.ANSI.BLACK_BRIGHT);
             }
         });
         replicaTable.setSelectAction(this::replicaMenu);
@@ -247,18 +257,21 @@ public final class Tui {
             @Override
             protected void applyStyle(Table<String> t, String cell, int col, int row, boolean sel, TextGUIGraphics g) {
                 g.applyThemeStyle(t.getThemeDefinition().getNormal());
+                if (col == 0) g.setForegroundColor(clientColor(row)).enableModifiers(SGR.BOLD);
+                else if (col == 1 && !cell.equals("0")) g.setForegroundColor(TextColor.ANSI.YELLOW);
+                else if (col == 2) g.setForegroundColor(resultColor(cell));
             }
         });
         clientTable.setEnabled(false); // display only: keep it out of the focus cycle
 
         Panel actions = Panels.horizontal(
-                new Button("Read", () -> requestDialog(false)),
-                new Button("Write", () -> requestDialog(true)),
-                new Button("Crash", this::crashDialog),
-                new Button("Scenarios", this::scenarioPicker),
-                new Button("Reset", this::reset),
-                new Button("Debug log", this::toggleDebug),
-                new Button("Quit", window::close));
+                new HoverButton("Read", () -> requestDialog(false)),
+                new HoverButton("Write", () -> requestDialog(true)),
+                new HoverButton("Crash", this::crashDialog),
+                new HoverButton("Scenarios", this::scenarioPicker),
+                new HoverButton("Reset", this::reset),
+                new HoverButton("Debug log", this::toggleDebug),
+                new HoverButton("Quit", window::close));
 
         Panel left = new Panel(new LinearLayout(Direction.VERTICAL));
         left.addComponent(replicaTable.withBorder(Borders.singleLine("Replicas")));
@@ -268,7 +281,7 @@ public final class Tui {
         Panel top = new Panel(new LinearLayout(Direction.HORIZONTAL));
         top.addComponent(left);
         top.addComponent(
-                scenarioLabel.withBorder(Borders.singleLine("Scenario")),
+                scenarioText.withBorder(Borders.singleLine("Scenario")),
                 LinearLayout.createLayoutData(LinearLayout.Alignment.Fill, LinearLayout.GrowPolicy.CanGrow));
 
         Panel bottom = Panels.vertical(
@@ -277,7 +290,7 @@ public final class Tui {
 
         Panel root = new Panel(new BorderLayout());
         root.addComponent(top, BorderLayout.Location.TOP);
-        root.addComponent(logLabel.withBorder(Borders.singleLine("Log")), BorderLayout.Location.CENTER);
+        root.addComponent(logText.withBorder(Borders.singleLine("Log")), BorderLayout.Location.CENTER);
         root.addComponent(bottom, BorderLayout.Location.BOTTOM);
 
         window.setHints(List.of(Window.Hint.FULL_SCREEN, Window.Hint.NO_DECORATIONS));
@@ -288,6 +301,7 @@ public final class Tui {
                 if (k.getKeyType() == KeyType.Character) handled.set(hotkey(Character.toLowerCase(k.getCharacter())));
             }
         });
+        HoverButton.track(window);
         gui.addWindow(window);
         window.setFocusedInteractable(replicaTable);
         tick();
@@ -395,14 +409,15 @@ public final class Tui {
             grid.addComponent(c);
         });
         boolean[] ok = {false};
-        Button submit = new Button("OK", () -> {
+        Button submit = new HoverButton("OK", () -> {
             ok[0] = true;
             w.close();
         });
         w.setComponent(Panels.vertical(
                 new Label(help).setForegroundColor(TextColor.ANSI.BLACK_BRIGHT),
                 grid,
-                Panels.horizontal(submit, new Button("Cancel", w::close))));
+                Panels.horizontal(submit, new HoverButton("Cancel", w::close))));
+        HoverButton.track(w);
         gui.addWindowAndWait(w);
         return ok[0];
     }
@@ -412,20 +427,20 @@ public final class Tui {
         BasicWindow w = new BasicWindow("Scenarios");
         w.setHints(List.of(Window.Hint.MODAL, Window.Hint.CENTERED));
         w.setCloseWindowWithEscape(true);
-        Label preview = new Label("");
+        StyledText preview = new StyledText();
         // Fixed size (the largest preview) so the dialog doesn't jump around while browsing.
         int cols = 0, rows = 0;
         for (String name : names) {
-            String[] lines = describe(name, -1).split("\n");
-            rows = Math.max(rows, lines.length);
-            for (String l : lines) cols = Math.max(cols, l.length());
+            List<List<Seg>> lines = describe(name, -1, null);
+            rows = Math.max(rows, lines.size());
+            for (List<Seg> l : lines) cols = Math.max(cols, width(l));
         }
         preview.setPreferredSize(new TerminalSize(cols, rows));
         ActionListBox list = new ActionListBox() {
             @Override
             public Result handleKeyStroke(KeyStroke k) {
                 Result result = super.handleKeyStroke(k);
-                preview.setText(describe(names.get(getSelectedIndex()), -1));
+                preview.setLines(describe(names.get(getSelectedIndex()), -1, null));
                 return result;
             }
         };
@@ -433,7 +448,7 @@ public final class Tui {
             w.close();
             runScenario(name);
         }));
-        preview.setText(describe(names.getFirst(), -1));
+        preview.setLines(describe(names.getFirst(), -1, null));
         w.setComponent(Panels.vertical(
                 Panels.horizontal(list.withBorder(Borders.singleLine()), preview.withBorder(Borders.singleLine())),
                 new Label("↑↓ browse   Enter/click run (restarts the system)   Esc cancel")
@@ -441,20 +456,85 @@ public final class Tui {
         gui.addWindowAndWait(w);
     }
 
+    private static final TextColor DIM = TextColor.ANSI.BLACK_BRIGHT, DEF = TextColor.ANSI.DEFAULT;
+
     /**
-     * Scenario description and its diagram. Steps before {@code current} are ticked, {@code current} gets an arrow;
-     * -1 marks nothing.
+     * Scenario header, description and lane diagram. Steps before {@code current} are ticked and dimmed,
+     * {@code current} is highlighted, -1 marks nothing; {@code state} (RUNNING/FINISHED) is shown as a badge if set.
      */
-    private static String describe(String name, int current) {
+    private static List<List<Seg>> describe(String name, int current, String state) {
         Scenario s = Scenario.ALL.get(name);
-        StringBuilder b = new StringBuilder(name + ": " + s.description() + "\n" + s.setup() + "\n\n");
-        b.append("   ").append(s.lanes()).append('\n');
+        List<List<Seg>> out = new ArrayList<>();
+        List<Seg> title = new ArrayList<>();
+        if (state != null) {
+            TextColor badge = state.equals("RUNNING") ? TextColor.ANSI.GREEN : TextColor.ANSI.CYAN;
+            title.add(new Seg(" " + state + " ", TextColor.ANSI.BLACK, badge, true));
+            title.add(new Seg(" ", DEF));
+        }
+        title.add(new Seg(name, TextColor.ANSI.WHITE_BRIGHT, DEF, true));
+        out.add(title);
+        for (String l : Scenario.wrap(s.description()).split("\n")) out.add(List.of(new Seg(l, DEF)));
+        out.add(List.of(new Seg(s.setup(), DIM)));
+        out.add(List.of());
+
+        List<Seg> lanes = new ArrayList<>(List.of(new Seg("   ", DEF)));
+        for (int l = 0; l < s.clients() + s.replicas(); l++) {
+            boolean client = l < s.clients();
+            String id = client ? "C" + l : "R" + (l - s.clients());
+            TextColor c = client ? clientColor(l) : replicaColor(l - s.clients());
+            lanes.add(new Seg(String.format("%-4s", id), c, DEF, true));
+        }
+        out.add(lanes);
+
         List<String> diagram = s.diagram();
         for (int i = 0; i < diagram.size(); i++) {
-            String gutter = i < current ? " ✓ " : i == current ? " ► " : "   ";
-            b.append(gutter).append(diagram.get(i).replace("\n", "\n   ")).append('\n');
+            boolean done = i < current, now = i == current;
+            TextColor color = done ? DIM : stepColor(s.steps().get(i));
+            String[] lines = diagram.get(i).split("\n");
+            for (int j = 0; j < lines.length; j++) {
+                List<Seg> line = new ArrayList<>();
+                String gutter = j > 0 ? "   " : done ? " ✓ " : now ? " ► " : "   ";
+                line.add(new Seg(gutter, done ? TextColor.ANSI.GREEN : TextColor.ANSI.YELLOW, DEF, true));
+                if (now) line.add(new Seg(lines[j], TextColor.ANSI.WHITE_BRIGHT, TextColor.ANSI.BLUE, true));
+                else line.addAll(laneRuns(lines[j], color));
+                out.add(line);
+            }
         }
-        return b.append('\n').append(Scenario.LEGEND).toString();
+        out.add(List.of());
+        out.add(List.of(new Seg(Scenario.LEGEND, DIM)));
+        return out;
+    }
+
+    /** What a step does, by color: client requests in the client's color, crashes red, waits dim. */
+    private static TextColor stepColor(String step) {
+        String[] a = step.split(" ");
+        return switch (a[0]) {
+            case "read", "write" -> clientColor(Integer.parseInt(a[1]));
+            case "crash" -> TextColor.ANSI.RED;
+            case "wait" -> DIM;
+            default -> DEF; // narration
+        };
+    }
+
+    /** Lifelines dim, everything else (arrows, symbols, labels) in {@code color}. */
+    private static List<Seg> laneRuns(String text, TextColor color) {
+        List<Seg> runs = new ArrayList<>();
+        int start = 0;
+        for (int i = 1; i <= text.length(); i++) {
+            if (i < text.length() && isLifeline(text.charAt(i)) == isLifeline(text.charAt(start))) continue;
+            String run = text.substring(start, i);
+            runs.add(new Seg(run, isLifeline(text.charAt(start)) ? DIM : color));
+            start = i;
+        }
+        return runs;
+    }
+
+    private static boolean isLifeline(char c) {
+        return c == '│' || c == '┆';
+    }
+
+    private static int width(List<Seg> line) {
+        return line.stream().mapToInt(s -> TerminalTextUtils.getColumnWidth(s.text())).sum();
     }
 
     private void runScenario(String name) {
@@ -498,11 +578,51 @@ public final class Tui {
     // Rendering
     // =================================================================================
 
+    // One color per actor, shared by the tables, the log and the scenario lanes. Red is kept for crashes.
+    private static final TextColor[] PALETTE = {
+        TextColor.ANSI.CYAN, TextColor.ANSI.GREEN, TextColor.ANSI.YELLOW, TextColor.ANSI.MAGENTA,
+        TextColor.ANSI.BLUE_BRIGHT, TextColor.ANSI.CYAN_BRIGHT, TextColor.ANSI.GREEN_BRIGHT,
+        TextColor.ANSI.YELLOW_BRIGHT, TextColor.ANSI.MAGENTA_BRIGHT, TextColor.ANSI.WHITE_BRIGHT
+    };
+
+    private static TextColor replicaColor(int id) {
+        return PALETTE[id % PALETTE.length];
+    }
+
+    /** Clients take the palette from the other end, so they differ from the replicas in small systems. */
+    private static TextColor clientColor(int id) {
+        return PALETTE[PALETTE.length - 1 - id % PALETTE.length];
+    }
+
     private static TextColor statusColor(String status) {
         if (status.startsWith("CRASHED")) return TextColor.ANSI.RED;
         if (status.startsWith("ELECTING")) return TextColor.ANSI.MAGENTA;
         if (status.startsWith("COORDINATOR")) return TextColor.ANSI.YELLOW;
         return TextColor.ANSI.GREEN;
+    }
+
+    private static TextColor resultColor(String result) {
+        if (result.contains("TIMEOUT") || result.contains("FAILED")) return TextColor.ANSI.RED;
+        if (result.equals("-")) return DEF;
+        return TextColor.ANSI.GREEN;
+    }
+
+    private static final Pattern ACTOR = Pattern.compile("\\[(?:Replica (\\d+)|Client Client_(\\d+))\\]");
+
+    /** Time dim, the rest in the color of the replica/client that logged it; crashes red and bold. */
+    private static List<Seg> logLine(String line) {
+        int split = Math.min(line.length(), 20); // "HH:mm:ss.SSS [INFO] "
+        TextColor color = DEF;
+        Matcher m = ACTOR.matcher(line);
+        if (m.find())
+            color = m.group(1) != null
+                    ? replicaColor(Integer.parseInt(m.group(1)))
+                    : clientColor(Integer.parseInt(m.group(2)));
+        boolean crash = line.contains("CRASHED");
+        boolean key = crash || line.contains("ELECTION STARTED") || line.contains("NEW COORDINATOR") || line.contains("TIMEOUT");
+        return List.of(
+                new Seg(line.substring(0, split), DIM),
+                new Seg(line.substring(split), crash ? TextColor.ANSI.RED : color, DEF, key));
     }
 
     private void refreshWidgets() {
@@ -526,24 +646,21 @@ public final class Tui {
             rows.add(List.of("C" + id, String.valueOf(clientViews[id].pending), clientViews[id].last));
         setTable(clientTable, List.of("ID", "PENDING", "LAST RESULT"), rows);
 
-        String text;
         if (scenario == null) {
-            text = "No scenario running.\nPress s (or Scenarios) to pick one: each shows what will happen before it starts.";
+            scenarioText.setLines(List.of(
+                    List.of(new Seg("No scenario running.", DEF)),
+                    List.of(new Seg("Press s (or Scenarios) to pick one: each shows what will happen before it starts.", DIM))));
         } else {
             boolean finished = stepIndex == scenario.steps().size() && System.currentTimeMillis() >= nextStepAt;
-            // State first: long descriptions wrap and may push the bottom lines out of the panel.
-            text = (finished ? "FINISHED  " : "RUNNING  ") + describe(scenarioName, finished ? stepIndex : stepIndex - 1);
+            scenarioText.setLines(describe(
+                    scenarioName, finished ? stepIndex : stepIndex - 1, finished ? "FINISHED" : "RUNNING"));
         }
-        setText(scenarioLabel, text);
 
-        int height = logLabel.getSize().getRows();
+        int height = logText.getSize().getRows();
         List<String> lines = new ArrayList<>(log);
-        setText(logLabel, String.join("\n", lines.subList(Math.max(0, lines.size() - height), lines.size())));
-    }
-
-    /** Only touch widgets whose content changed, so idle frames redraw nothing. */
-    private static void setText(Label label, String text) {
-        if (!text.equals(label.getText())) label.setText(text);
+        logText.setLines(lines.subList(Math.max(0, lines.size() - height), lines.size()).stream()
+                .map(Tui::logLine)
+                .toList());
     }
 
     private static void setTable(Table<String> table, List<String> header, List<List<String>> rows) {

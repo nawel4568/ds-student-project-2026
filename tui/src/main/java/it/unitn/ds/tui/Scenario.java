@@ -74,7 +74,7 @@ record Scenario(String description, int replicas, int clients, int coordinator, 
         return out;
     }
 
-    private static String wrap(String text) {
+    static String wrap(String text) {
         StringBuilder b = new StringBuilder();
         int lineStart = 0;
         for (String word : text.split(" ")) {
