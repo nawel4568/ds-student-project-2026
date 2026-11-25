@@ -208,8 +208,8 @@ record Scenario(String description, int replicas, int clients, int coordinator, 
         ALL.put(
                 "most-updated-wins",
                 new Scenario(
-                        "only R2 stores the newest UPDATE before the coordinator crashes: the election picks the most"
-                                + " up-to-date replica, R2",
+                        "two elections: R1 wins the first by lowest id; then only R2 stores the newest UPDATE before"
+                                + " R1 crashes, so the second picks R2, the most up-to-date replica",
                         5,
                         2,
                         0,
@@ -217,12 +217,17 @@ record Scenario(String description, int replicas, int clients, int coordinator, 
                                 "say Write [1]=10: every replica applies it",
                                 "write 0 1 1 10",
                                 "wait 1500",
-                                "say Crash R1, and arm R0 to crash after 2 UPDATE messages (to R1, lost, and to R2)",
-                                "crash 1",
-                                "crash 0 Update 2",
+                                "say Crash the coordinator R0: everyone has the same updates, so R1 (lowest id) wins",
+                                "crash 0",
+                                "wait 4000",
+                                // The coordinator broadcasts in ascending id order, so R2 only gets an UPDATE that
+                                // R1 lacks when R1 itself is the coordinator.
+                                "say Arm the new coordinator R1 to crash after 2 UPDATE messages (to R0, lost, and"
+                                        + " to R2)",
+                                "crash 1 Update 2",
                                 "say Write [2]=20 via R3: only R2 stores the UPDATE, so R2 holds the most recent update",
                                 "write 0 3 2 20",
-                                "say R3 and R2 time out and start an election; the token carries every replica's last"
+                                "say R2..R4 time out and start an election; the token carries every replica's last"
                                         + " update and R2's is the newest",
                                 "wait 5000",
                                 "say R2 is the new coordinator and completes [2]=20 on every live replica",
