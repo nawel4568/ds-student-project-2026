@@ -5,6 +5,7 @@ import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.Props;
 import com.googlecode.lanterna.SGR;
+import com.googlecode.lanterna.TerminalPosition;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.TerminalTextUtils;
 import com.googlecode.lanterna.TextColor;
@@ -36,6 +37,7 @@ import com.googlecode.lanterna.gui2.table.Table;
 import com.googlecode.lanterna.gui2.table.TableModel;
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
+import com.googlecode.lanterna.input.MouseAction;
 import com.googlecode.lanterna.screen.Screen;
 import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
 import com.googlecode.lanterna.terminal.MouseCaptureMode;
@@ -82,9 +84,9 @@ public final class Tui {
     private static final long READ_TIMEOUT_MS = 2000;
     // Must outlast heartbeat detection + election, otherwise writes during an election time out.
     private static final long WRITE_TIMEOUT_MS = 10000;
-    private static final int LOG_LINES_KEPT = 500;
-    private static final String KEYS =
-            "↑↓/click: select replica   Enter: replica actions   r read   w write   c crash   s scenarios   x reset   d debug log   q quit";
+    private static final int LOG_LINES_KEPT = 5000;
+    private static final String KEYS = "↑↓/click: select replica   Enter: replica actions   r read   w write   c crash"
+            + "   s scenarios   x reset   d debug log   PgUp/PgDn/wheel: scroll log   q quit";
 
     record Event(ActorRef from, Object msg) {}
 
@@ -146,6 +148,7 @@ public final class Tui {
     private final Panel actions = new Panel(new LinearLayout(Direction.VERTICAL)); // rows of buttons
     private List<Button> buttons;
     private int actionsWidth = -1;
+    private int logScroll; // lines scrolled back from the newest; 0 follows the log
     private static final int SCENARIO_MIN_WIDTH = 77; // the scenario panel's diagram, border included
 
     Tui(int nReplicas, int nClients, int coordinator) throws Exception {
@@ -176,6 +179,7 @@ public final class Tui {
         replicaIds.clear();
         clientIds.clear();
         log.clear();
+        logScroll = 0;
 
         ActorRef probe = system.actorOf(Props.create(Probe.class, () -> new Probe(queue)), "tui_probe");
         replicaViews = new ReplicaView[nReplicas];
@@ -303,6 +307,22 @@ public final class Tui {
             @Override
             public void onUnhandledInput(Window w, KeyStroke k, AtomicBoolean handled) {
                 if (k.getKeyType() == KeyType.Character) handled.set(hotkey(Character.toLowerCase(k.getCharacter())));
+            }
+
+            // Before the focused table sees them: it would use PgUp/PgDn to move its selection.
+            @Override
+            public void onInput(Window w, KeyStroke k, AtomicBoolean deliver) {
+                int page = Math.max(1, logText.getSize().getRows() - 1);
+                int delta =
+                        switch (k.getKeyType()) {
+                            case PageUp -> page;
+                            case PageDown -> -page;
+                            case MouseEvent -> wheelOverLog((MouseAction) k);
+                            default -> 0;
+                        };
+                if (delta == 0) return;
+                logScroll = Math.max(0, logScroll + delta);
+                deliver.set(false);
             }
         });
         HoverButton.track(window);
@@ -685,11 +705,39 @@ public final class Tui {
                     scenarioName, finished ? stepIndex : stepIndex - 1, finished ? "FINISHED" : "RUNNING"));
         }
 
+        // When scrolled back, the last row says how far, and the view stays put as new lines arrive (see tailLog).
         int height = logText.getSize().getRows();
         List<String> lines = new ArrayList<>(log);
-        logText.setLines(lines.subList(Math.max(0, lines.size() - height), lines.size()).stream()
-                .map(Tui::logLine)
-                .toList());
+        int visible = logScroll > 0 ? height - 1 : height;
+        logScroll = Math.max(0, Math.min(logScroll, lines.size() - visible));
+        int end = lines.size() - logScroll;
+        List<List<Seg>> view = new ArrayList<>();
+        lines.subList(Math.max(0, end - visible), end).forEach(l -> view.add(logLine(l)));
+        if (logScroll > 0)
+            view.add(List.of(new Seg(
+                    "── " + logScroll + " newer line(s) below · PgDn or mouse wheel down to follow ──",
+                    TextColor.ANSI.BLACK,
+                    TextColor.ANSI.YELLOW,
+                    true)));
+        logText.setLines(view);
+    }
+
+    /** Mouse wheel over the log pane: lines to scroll back (negative: forward), else 0. */
+    private int wheelOverLog(MouseAction m) {
+        TerminalPosition origin = logText.toGlobal(TerminalPosition.TOP_LEFT_CORNER);
+        if (origin == null) return 0;
+        TerminalPosition p = m.getPosition();
+        TerminalSize size = logText.getSize();
+        boolean over = p.getColumn() >= origin.getColumn()
+                && p.getColumn() < origin.getColumn() + size.getColumns()
+                && p.getRow() >= origin.getRow()
+                && p.getRow() < origin.getRow() + size.getRows();
+        if (!over) return 0;
+        return switch (m.getActionType()) {
+            case SCROLL_UP -> 3;
+            case SCROLL_DOWN -> -3;
+            default -> 0;
+        };
     }
 
     private static void setTable(Table<String> table, List<String> header, List<List<String>> rows) {
@@ -782,6 +830,7 @@ public final class Tui {
                 // readLine decodes as Latin-1; re-decode as the UTF-8 the Logger writes.
                 line = new String(line.getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
                 log.addLast(line.length() > 11 ? line.substring(11) : line); // drop the date, keep the time
+                if (logScroll > 0) logScroll++; // keep the lines being read in place
                 // A deferred crash fires no callback; the replica only logs it, so take it from there.
                 Matcher m = CRASHED.matcher(line);
                 if (m.find() && Integer.parseInt(m.group(1)) < replicaViews.length)
