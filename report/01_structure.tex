@@ -1,8 +1,7 @@
 \section{Project Structure}
 
-\review{The project extends the provided codebase without modifying its abstract classes. All code lives in the package \texttt{it.unitn.ds}:}
+The project extends the provided codebase without modifying its abstract classes. All code lives in the package \texttt{it.unitn.ds}:
 
-\review{
 \begin{itemize}[nosep]
     \item \texttt{Replica} (extends \texttt{AbstractReplica}): the whole protocol, i.e.\ client request handling, two-phase broadcast, heartbeats, failure detection, ring election and synchronization.
     \item \texttt{Client} (extends \texttt{AbstractClient}): sends read and write requests and detects their timeouts.
@@ -11,17 +10,14 @@
     \item \texttt{UpdateEntry}: one write in the history, i.e.\ $P[\mathit{idx}] = \mathit{val}$, plus the client and the replica that must answer it.
     \item \texttt{CrashTrigger}: a small counter used to emulate deferred crashes (Section~\ref{sec:crashes}).
 \end{itemize}
-}
 
-\review{A replica is always in one of four modes (\texttt{ReplicaMode}), each implemented as a separate Akka \texttt{Receive} behavior and switched with \texttt{setBehavior}, which calls \texttt{getContext().become(...)}:}
+A replica is always in one of four modes (\texttt{ReplicaMode}), each implemented as a separate Akka \texttt{Receive} behavior and switched with \texttt{setBehavior}, which calls \texttt{getContext().become(...)}:
 
-\review{
 \begin{itemize}[nosep]
     \item \textbf{NORMAL}: serves reads, forwards writes to the coordinator, acknowledges \texttt{UPDATE}s, applies \texttt{WRITEOK}s and monitors the coordinator.
     \item \textbf{COORDINATOR}: in addition, sequences writes, counts \texttt{ACK}s, broadcasts \texttt{WRITEOK}s and heartbeats. Late \texttt{ELECTION} messages are only acknowledged.
     \item \textbf{ELECTION}: serves reads, buffers writes, and handles only election messages. \texttt{UPDATE}s and \texttt{WRITEOK}s are not matched, so they are dropped.
     \item \textbf{CRASHED}: matches every message, timers included, and does nothing. A crashed replica never leaves this mode.
 \end{itemize}
-}
 
-\review{Keeping the modes separate makes it explicit which messages are handled, and which are ignored, in each state.}
+Keeping the modes separate makes it explicit which messages are handled, and which are ignored, in each state.

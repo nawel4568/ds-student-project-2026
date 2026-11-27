@@ -2,73 +2,70 @@
 
 \subsection{Client requests}
 
-\review{\textbf{Reads} are answered immediately by the contacted replica with the value in its local list $P$. Since a replica applies updates in total order and channels are FIFO, a client that always talks to the same replica observes a sequentially consistent history. A read for an index outside the list is answered with a failed result.}
+\textbf{Reads} are answered immediately by the contacted replica with the value in its local list $P$. Since a replica applies updates in total order and channels are FIFO, a client that always talks to the same replica observes a sequentially consistent history. A read for an index outside the list is answered with a failed result.
 
-\review{\textbf{Writes} are forwarded by the contacted replica to the coordinator as an \texttt{UpdateRequestMsg}. The message carries the client's \texttt{ActorRef} and request id, so the contacted replica can answer the client once it applies the update. A client tags each request with an increasing request id and keeps one timer per pending request. The first of reply or timeout completes the request, and the other one is ignored.}
+\textbf{Writes} are forwarded by the contacted replica to the coordinator as an \texttt{UpdateRequestMsg}. The message carries the client's \texttt{ActorRef} and request id, so the contacted replica can answer the client once it applies the update. A client tags each request with an increasing request id and keeps one timer per pending request. The first of reply or timeout completes the request, and the other one is ignored.
 
 \subsection{Two-phase broadcast}
 
-\review{On an \texttt{UpdateRequestMsg} the coordinator increments the sequence number, stores the update in its history, counts itself as the first \texttt{ACK}, and broadcasts an \texttt{UPDATE} $\langle e,i\rangle$. A replica receiving the \texttt{UPDATE} stores it as \emph{unstable} (known, but not applied), records $\langle e,i\rangle$ as the most recent update it knows, and replies with an \texttt{ACK}. When the coordinator reaches $\lfloor N/2\rfloor + 1$ \texttt{ACK}s, it applies the update and broadcasts a \texttt{WRITEOK}. Replicas apply the update when the \texttt{WRITEOK} arrives. Further \texttt{ACK}s for an applied update are ignored, so an update is applied and acknowledged to the client exactly once.}
+On an \texttt{UpdateRequestMsg} the coordinator increments the sequence number, stores the update in its history, counts itself as the first \texttt{ACK}, and broadcasts an \texttt{UPDATE} $\langle e,i\rangle$. A replica receiving the \texttt{UPDATE} stores it as \emph{unstable} (known, but not applied), records $\langle e,i\rangle$ as the most recent update it knows, and replies with an \texttt{ACK}. When the coordinator reaches $\lfloor N/2\rfloor + 1$ \texttt{ACK}s, it applies the update and broadcasts a \texttt{WRITEOK}. Replicas apply the update when the \texttt{WRITEOK} arrives. Further \texttt{ACK}s for an applied update are ignored, so an update is applied and acknowledged to the client exactly once.
 
-\review{\textbf{Update storage.} Each replica keeps:}
-\review{
+\textbf{Update storage.} Each replica keeps:
+
 \begin{itemize}[nosep]
     \item \texttt{locations}: the list $P$ of applied values;
     \item \texttt{updatesHistory}: a \texttt{TreeMap<EpochSeqNum, UpdateEntry>} with every update it has seen, sorted by $\langle e,i\rangle$;
     \item \texttt{unstable}: the ids of updates received but not yet applied. On the coordinator, each id maps to its \texttt{ACK} count;
     \item \texttt{lastUpdate}: the most recent $\langle e,i\rangle$ it knows, used in elections.
 \end{itemize}
-}
-\review{Keeping the history sorted lets the new coordinator send each replica exactly the suffix it is missing (\texttt{tailMap}), and lets replicas apply recovered updates in total order.}
+
+Keeping the history sorted lets the new coordinator send each replica exactly the suffix it is missing (\texttt{tailMap}), and lets replicas apply recovered updates in total order.
 
 \subsection{Failure detection and timeouts}
 
-\review{All timeouts are derived from the latency bounds that the tests use. Let $T = \mathit{maxLat} + \frac{\mathit{maxLat}}{2}N$ be \texttt{getMaxLatencyPlusTolerance()}, i.e.\ one hop plus a tolerance for the time a replica needs to iterate a broadcast loop.}
+All timeouts are derived from the latency bounds that the tests use. Let $T = \mathit{maxLat} + \frac{\mathit{maxLat}}{2}N$ be the value returned by \texttt{getMaxLatency}\allowbreak\texttt{PlusTolerance()}, i.e.\ one hop plus a tolerance for the time a replica needs to iterate a broadcast loop.
 
-\review{
 \begin{center}
 \begin{tabular}{l l l}
 \hline
 \textbf{Timeout} & \textbf{Started when} & \textbf{Value} \\
 \hline
 Coordinator (heartbeat) & on every \texttt{HEARTBEAT} & beat interval $+\,T$ \\
-\texttt{UPDATE} & a write is forwarded to the coordinator & $4T$ \\
+\texttt{UPDATE} & a write is forwarded to the coordinator & $4T \cdot (k+1)$ \\
 \texttt{WRITEOK} & an \texttt{UPDATE} is acknowledged & $4T$ \\
 Election \texttt{ACK} & an \texttt{ELECTION} is sent & $4T$ \\
 Election & the replica enters the election & $N \cdot 4T$ \\
 \hline
 \end{tabular}
 \end{center}
-}
 
-\review{The request timeouts cover two hops, each with twice the tolerance, because a message can be queued behind a burst of writes on the same FIFO channel. They are kept below the heartbeat timeout: otherwise the heartbeat would always detect the crash first, and the request timeouts would be useless. Any of these timeouts, except the election ones, makes the replica start an election.}
+The request timeouts cover two hops, each with twice the tolerance, because a message can be queued behind a burst of writes on the same FIFO channel. With no other pending writes they are below the heartbeat timeout: otherwise the heartbeat would always detect the crash first, and the request timeouts would be useless. The \texttt{UPDATE} timeout is multiplied by $k+1$, where $k$ is the number of writes the replica has already forwarded and is still waiting for: the coordinator handles writes one at a time, so the more writes are queued, the later the \texttt{UPDATE} for the last one arrives. Any of these timeouts, except the election ones, makes the replica start an election.
 
-\review{Timers are scheduled with \texttt{scheduleOnce}, and each \texttt{Cancellable} is stored in a field or map keyed by what it waits for: the client write $(\mathit{client}, \mathit{reqId})$ for \texttt{UPDATE}, the update id for \texttt{WRITEOK}. The timer is cancelled when the awaited message arrives. Because a timer can fire just before it is cancelled, each handler first checks that the timer is still registered, and drops stale timeouts. Entering an election cancels all protocol timers.}
+Timers are scheduled with \texttt{scheduleOnce}, and each \texttt{Cancellable} is stored in a field or map keyed by what it waits for: the client write $(\mathit{client}, \mathit{reqId})$ for \texttt{UPDATE}, the update id for \texttt{WRITEOK}. The timer is cancelled when the awaited message arrives. Because a timer can fire just before it is cancelled, each handler first checks that the timer is still registered, and drops stale timeouts. Entering an election cancels all protocol timers.
 
 \subsection{Coordinator election}
 
-\review{The ring is defined by replica ids: the successor of $r$ is $(r+1) \bmod N$. A replica that detects the crash enters ELECTION mode and sends its successor an \texttt{ELECTION} token. The token contains a map from replica id to that replica's \texttt{lastUpdate}, the current best candidate, and the epoch of the initiator.}
+The ring is defined by replica ids: the successor of $r$ is $(r+1) \bmod N$. A replica that detects the crash enters ELECTION mode and sends its successor an \texttt{ELECTION} token. The token contains a map from replica id to that replica's \texttt{lastUpdate}, the current best candidate, and the epoch of the initiator.
 
-\review{A replica receiving a token first acknowledges it to the sender, and drops it if the token's epoch is older than its own. If the replica is not yet in the token, it adds its own \texttt{lastUpdate}, updates the candidate (most recent update wins, the lower id breaks ties), and forwards the token to its successor. If the replica is already in the token, the token has completed the ring: if the replica is the candidate, it becomes the coordinator; otherwise it forwards the token directly to the candidate. A token is never sent around the ring a second time, so it cannot loop forever.}
+A replica receiving a token first acknowledges it to the sender, and drops it if the token's epoch is older than its own. If the replica is not yet in the token, it adds its own \texttt{lastUpdate}, updates the candidate (most recent update wins, the lower id breaks ties), and forwards the token to its successor. If the replica is already in the token, the token has completed the ring: if the replica is the candidate, it becomes the coordinator; otherwise it forwards the token directly to the candidate. A token is never sent around the ring a second time, so it cannot loop forever.
 
-\review{While in ELECTION mode a replica drops \texttt{UPDATE} and \texttt{WRITEOK} messages, so its \texttt{lastUpdate} cannot change after it has been written into a token (Hint~1). Several replicas may start an election at the same time. Without further crashes, each token visits the same set of correct replicas, so all of them select the same winner, and the winner only acknowledges the extra tokens once it is coordinator.}
+While in ELECTION mode a replica drops \texttt{UPDATE} and \texttt{WRITEOK} messages, so its \texttt{lastUpdate} cannot change after it has been written into a token. Several replicas may start an election at the same time. Without further crashes, each token visits the same set of correct replicas, so all of them select the same winner, and the winner only acknowledges the extra tokens once it is coordinator.
 
-\review{\textbf{Crashes during the election.} If no \texttt{ACK} arrives within the election \texttt{ACK} timeout, the sender considers the destination crashed. If it was the successor, it skips it and moves to the next replica in the ring. It then restarts with a fresh token containing only itself. This also handles a candidate that crashes: the fresh token builds a new list without it. Finally, if a replica does not receive a \texttt{SYNCHRONIZATION} within the election timeout ($N$ times the per-hop timeout), it starts the election again. This covers the cases where a crash cannot be detected by the preceding sender, for example two consecutive crashes, or a winner that crashes before announcing itself (Hint~2).}
+\textbf{Crashes during the election.} If no \texttt{ACK} arrives within the election \texttt{ACK} timeout, the sender considers the destination crashed. If it was the successor, it skips it and moves to the next replica in the ring. It then restarts with a fresh token containing only itself. This also handles a candidate that crashes: the fresh token builds a new list without it. Finally, if a replica does not receive a \texttt{SYNCHRONIZATION} within the election timeout ($N$ times the per-hop timeout), it starts the election again. This covers the cases where a crash cannot be detected by the preceding sender, for example two consecutive crashes, or a winner that crashes before announcing itself, so the election never blocks forever.
 
 \subsection{New coordinator and uniform agreement}
 
-\review{The winner performs the following steps, in order:}
-\review{
+The winner performs the following steps, in order:
+
 \begin{enumerate}[nosep]
-    \item It applies all its unstable updates in $\langle e,i\rangle$ order (Hint~3). The previous coordinator may have applied them before crashing.
+    \item It applies all its unstable updates in $\langle e,i\rangle$ order, because the previous coordinator may have applied them before crashing.
     \item It starts a new epoch $e+1$ with sequence number $0$.
     \item It sends every other replica in the token a \texttt{SYNCHRONIZATION} with the new epoch, its id, and the history suffix starting from that replica's \texttt{lastUpdate}.
     \item It switches to COORDINATOR mode, starts the heartbeat, and processes the writes buffered during the election.
 \end{enumerate}
-}
 
-\review{A replica receiving a \texttt{SYNCHRONIZATION} from a newer epoch merges the received suffix with its own unstable updates, and applies, in order, every update it has not applied yet. Updates it already applied are skipped, so nothing is delivered twice. It then adopts the new coordinator and epoch, re-forwards its buffered writes, and returns to NORMAL mode.}
+A replica receiving a \texttt{SYNCHRONIZATION} from a newer epoch merges the received suffix with its own unstable updates, and applies, in order, every update it has not applied yet. Updates it already applied are skipped, so nothing is delivered twice. It then adopts the new coordinator and epoch, re-forwards its buffered writes, and returns to NORMAL mode.
 
-\review{\textbf{Why this preserves uniform agreement.} An update is applied by anyone only after a quorum has acknowledged it. Since a quorum of replicas never crashes, at least one correct replica holds it in its history. The winner knows the most recent update among all correct replicas. Because each coordinator sends updates in order over FIFO channels, the winner also holds every earlier update of that epoch, so the \texttt{SYNCHRONIZATION} brings all correct replicas to the same history before any new write is sequenced. An update that reached some replicas but not a quorum may also be committed, which is safe: every correct replica will apply it in the same position.}
+\textbf{Why this preserves uniform agreement.} An update is applied by anyone only after a quorum has acknowledged it. Since a quorum of replicas never crashes, at least one correct replica holds it in its history. The winner knows the most recent update among all correct replicas. Because each coordinator sends updates in order over FIFO channels, the winner also holds every earlier update of that epoch, so the \texttt{SYNCHRONIZATION} brings all correct replicas to the same history before any new write is sequenced. An update that reached some replicas but not a quorum may also be committed, which is safe: every correct replica will apply it in the same position.
 
-\review{\textbf{Writes during and across an election.} A write that is forwarded but has no \texttt{UPDATE} yet is kept in a \texttt{pendingWrites} map, together with its timer. Writes received during the election are buffered in the same map. After the election, pending writes are sent to the new coordinator. Before that, any pending write that appears in the synchronized history is removed from the map, so a write that the old coordinator already broadcast is not sequenced twice.}
+\textbf{Writes during and across an election.} A write that is forwarded but has no \texttt{UPDATE} yet is kept in a \texttt{pendingWrites} map, together with its timer. Writes received during the election are buffered in the same map. After the election, pending writes are sent to the new coordinator. Before that, any pending write that appears in the synchronized history is removed from the map, so a write that the old coordinator already broadcast is not sequenced twice.

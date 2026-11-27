@@ -1,15 +1,10 @@
 \section{Implementation}
 
-\subsection{Network emulation}
-
-\review{Replicas send every message through the \texttt{tell(msg, dst)} method of \texttt{AbstractReplica}, which routes it through a per-destination \texttt{NetworkChannel} actor. The channel adds a random delay in $[\mathit{minLat}, \mathit{maxLat})$ while preserving FIFO order. \texttt{Replica.broadcast(msg, crashType)} sends a message to every other replica in a loop, and checks the crash trigger after each send (see below).}
-
 \subsection{Crash emulation}
 \label{sec:crashes}
 
-\review{A crash is requested with an \texttt{AbstractReplica.Crash(type, n)} message. \texttt{Crash.Type.Now} switches the replica immediately to the crashed behavior. Any other type arms the \texttt{CrashTrigger} with a budget of $n$ messages. The replica then calls \texttt{crashIf(type)} at the instrumented points, and crashes when the budget reaches zero:}
+A crash is requested with an \texttt{AbstractReplica.Crash(type, n)} message. \texttt{Crash.Type.Now} switches the replica immediately to the crashed behavior. Any other type arms the \texttt{CrashTrigger} with a budget of $n$ messages. The replica then calls \texttt{crashIf(type)} at the instrumented points, and crashes when the budget reaches zero. In particular, \texttt{Replica.broadcast(msg, crashType)} sends a message to every other replica in a loop and checks the trigger after each send:
 
-\review{
 \begin{center}
 \begin{tabular}{l >{\raggedright\arraybackslash}p{0.38\textwidth} >{\raggedright\arraybackslash}p{0.38\textwidth}}
 \hline
@@ -22,22 +17,32 @@
 \hline
 \end{tabular}
 \end{center}
-}
 
-\review{Because the coordinator counts single sends inside the broadcast loop, a crash can leave an \texttt{UPDATE} or a \texttt{WRITEOK} delivered to only some of the replicas. These are exactly the corner cases the election must recover from. A new \texttt{Crash} message replaces the previously armed one. Messages already handed to a \texttt{NetworkChannel} before the crash are still delivered, as if they had already left the node. Scheduled timers keep firing, but the crashed behavior ignores them.}
+Because the coordinator counts single sends inside the broadcast loop, a crash can leave an \texttt{UPDATE} or a \texttt{WRITEOK} delivered to only some of the replicas. These are exactly the corner cases the election must recover from. Messages sent before the crash are still delivered, as if they had already left the node. Scheduled timers keep firing, but the crashed behavior ignores them.
 
 \subsection{Logging and testing}
 
-\review{All output goes through the provided \texttt{Logger}, using the \texttt{log}/\texttt{debug} wrappers and the mandatory callbacks (\texttt{callbackOnUpdateApplied}, \texttt{callbackOnElectionStarted}, \texttt{callbackOnCoordinatorElected}, and the client callbacks). The implementation passes all the provided base tests (\texttt{APICompliance}, \texttt{NoCrashes}, \texttt{WithCrashes}). We added \texttt{ImmutableMessagesTest}, which uses reflection to check that every message class, and every type reachable from it, has only \texttt{final} fields of immutable types. This enforces the ban on shared mutable state between actors.}
+All output goes through the provided \texttt{Logger}, using the \texttt{log}/\texttt{debug} wrappers and the \texttt{callbackOn*} methods of the replica and of the client. The implementation passes all the provided base tests (\texttt{APICompliance}, \texttt{NoCrashes}, \texttt{WithCrashes}). We added \texttt{ImmutableMessagesTest}, which uses reflection to check that every message class, and every type reachable from it, has only \texttt{final} fields of immutable types, so actors never share mutable state.
+
+\texttt{Main} runs one of 14 scenarios, chosen from the command line (\texttt{./gradlew run --args=<k>}). A \texttt{Checker} actor is registered as the listener of every replica and client, and at the end of the run it verifies that: all correct replicas applied the same sequence of updates; each crashed replica applied a prefix of it; no update was applied twice; the expected number of updates and coordinator changes happened; all survivors agree on the coordinator; and reads of the same client never go backwards. The scenarios cover:
+
+\begin{itemize}[nosep]
+    \item no crashes, and crashes of non-coordinator replicas (no election needed);
+    \item a coordinator crash detected by the heartbeat, and one detected by the \texttt{UPDATE} timeout of a forwarded write;
+    \item a coordinator crash in the middle of the \texttt{UPDATE} broadcast, in the middle of the \texttt{WRITEOK} broadcast, and right after it;
+    \item crashes in the ring: the coordinator together with one or two consecutive successors;
+    \item crashes during the election: the would-be winner, a replica right after forwarding the token, and the new coordinator itself (two epochs);
+    \item concurrent elections started by several replicas at once;
+    \item a stream of writes and reads across a coordinator crash.
+\end{itemize}
 
 \subsection{Additional assumptions and limitations}
 
-\review{
 \begin{itemize}[nosep]
-    \item As required, timeouts never give false positives: the latency bounds hold, and the system is never so overloaded that a message misses its timeout.
+    \item Timeouts never give false positives: the latency bounds hold, and the system is never so overloaded that a message misses its timeout. In practice, every write goes through the coordinator, which becomes the bottleneck: if clients send many writes in a short time, the coordinator falls behind, \texttt{UPDATE}s and \texttt{WRITEOK}s arrive later than the timeouts expect, and replicas wrongly suspect the coordinator and start an election. Scaling the \texttt{UPDATE} timeout with the number of pending writes reduces this problem but does not remove it, so we assume a moderate write rate.
     \item The set of replicas is fixed and known to every replica from the \texttt{InitSystem} message.
     \item Ties between equally up-to-date candidates are broken in favor of the lowest id.
     \item The update history is never truncated. This is acceptable for the size of the system under test, but a long-running deployment would need to discard entries that every replica has applied.
     \item A replica keeps a single election \texttt{ACK} timer. If two tokens are sent to the same successor in quick succession, the first \texttt{ACK} also cancels the timer of the second token. A crash of that successor is then detected only by the (longer) election timeout.
 \end{itemize}
-}
+

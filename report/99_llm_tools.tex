@@ -1,5 +1,13 @@
 \section*{Information about the use of LLM tools}
 
-\begin{itemize}
-    \item \textbf{Claude Code (Anthropic Claude Opus)}: creating code for the build tooling of this report (Makefile and GitHub Actions workflow), the code formatter configuration, and the repository instructions for AI agents; brainstorming implementation approaches; reviewing code we had already written; refactoring; writing an automated test that checks message immutability; \review{generating a first draft of the report text from our code, which we then reviewed and edited}.
+We used Claude Opus (Anthropic), through the Claude Code command-line tool, during the development of the project and the writing of this report. It was used for:
+
+\begin{itemize}[nosep]
+    \item creating code for the build tooling of this report (Makefile and GitHub Actions workflow), the code formatter configuration, and the repository instructions for AI agents;
+    \item brainstorming implementation approaches;
+    \item reviewing code we had already written, and refactoring it;
+    \item writing an automated test that checks message immutability;
+    \item writing the \texttt{Checker} actor in \texttt{Main}, which verifies the outcome of the demo scenarios;
+    \item generating a first draft of the report text from our code, which we then reviewed and edited.
 \end{itemize}
+

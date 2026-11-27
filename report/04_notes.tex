@@ -1,9 +1,0 @@
-\section{Notes (TODO)}
-
-Crash implementation:
-
-\begin{itemize}
-    \item Update crash: counts UpdateRequests on coordinator; UpdateMsg on replicas.
-    \item WriteOK: only crashes replicas.
-    \item If another deferred crash is received, it overrides the currently active "crash countdown". E.g. if I'm currently in Type.Update(3) and receive Type.WriteOK(2) I can receive > 3 update requests and will not crash. \textbf{TODO: check if it's an issue}.
-\end{itemize}
