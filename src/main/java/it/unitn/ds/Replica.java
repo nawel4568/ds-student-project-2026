@@ -271,7 +271,10 @@ public class Replica extends AbstractReplica {
         if (this.id == this.coordinator_id) return; // the coordinator can't time out on itself
 
         WriteId key = new WriteId(req.clientRequesting, req.reqId);
-        pendingWrites.put(key, new PendingWrite(req, schedule(key, getRequestTimeout())));
+        // Avoid false crash detection: the more writes are pending, the slower the
+        // coordinator may respond, so we wait proportionally longer before timing out.
+        long timeout = (long) getRequestTimeout() * (pendingWrites.size() + 1);
+        pendingWrites.put(key, new PendingWrite(req, schedule(key, timeout)));
     }
 
     private void onReadReqMsg(ReadReqMsg msg) {
